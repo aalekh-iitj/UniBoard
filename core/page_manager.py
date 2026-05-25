@@ -14,10 +14,11 @@ class PageNode:
         
         # Store metadata for other engines (like HTML views or compilers state)
         self.meta = {
-            "html_code": "",
-            "live_url": "",
-            "compiled_code": "",
-            "compiler_lang": "python"
+            "canvas_type": "plain",  # "plain" | "html" | "compiler" | "browser"
+            "html_code": "<!-- Paste HTML here -->\n<div style='background: linear-gradient(135deg, #8a2be2, #4a00e0); color: white; padding: 40px; border-radius: 12px; font-family: sans-serif; text-align: center;'>\n  <h2>UniBoard HTML Presentation</h2>\n  <p>Render presentation pages and annotate on top of them.</p>\n</div>",
+            "live_url": "https://www.google.com",
+            "compiled_code": "# Write python code here\nprint('Hello UniBoard compiler!')\n",
+            "compiler_lang": "Python"
         }
 
     def add_child(self, child_node):
@@ -34,23 +35,84 @@ class PageManager:
     def __init__(self):
         self.root_pages = []
         self.active_page = None
+        self.default_page_id = None
         
         # Set up a default page
-        self.create_page("Introduction")
+        default_page = self.create_page("Introduction")
+        self.default_page_id = default_page.id
 
-    def create_page(self, title, parent_id=None):
-        """Creates a new page node and sets it as active if it's the first page."""
+    def get_slide_counts(self):
+        """Returns (above_count, below_count, total_count) of root pages."""
+        if not self.root_pages:
+            return 0, 0, 0
+        try:
+            default_idx = next(i for i, n in enumerate(self.root_pages) if n.id == self.default_page_id)
+        except StopIteration:
+            return 0, 0, len(self.root_pages)
+            
+        above = default_idx
+        below = len(self.root_pages) - default_idx - 1
+        return above, below, len(self.root_pages)
+
+    def can_add_root_page(self, insert_index=None):
+        """Checks if a root page can be added at the target insert_index."""
+        above, below, total = self.get_slide_counts()
+        if total >= 55:
+            return False, "Maximum limit of 55 pages reached."
+            
+        if not self.root_pages:
+            return True, ""
+            
+        try:
+            default_idx = next(i for i, n in enumerate(self.root_pages) if n.id == self.default_page_id)
+        except StopIteration:
+            default_idx = 0
+
+        # If insert_index is not specified, we append (which goes below default page)
+        if insert_index is None:
+            insert_index = len(self.root_pages)
+
+        # If inserting before or at the default index, it shifts the default index right,
+        # which increases the "above" count.
+        if insert_index <= default_idx:
+            if above >= 5:
+                return False, "Cannot add more than 5 pages above the default page."
+        else:
+            if below >= 50:
+                return False, "Cannot add more than 50 pages below the default page."
+                
+        return True, ""
+
+    def create_page(self, title, parent_id=None, insert_after_id=None):
+        """Creates a new page node, enforcing slide limits if it is a root page."""
         if parent_id:
+            # Subtopic - no limit check needed as it doesn't count towards main slides limit
             parent_node = self.find_node_by_id(parent_id)
             if parent_node:
                 new_node = PageNode(title, parent=parent_node)
                 parent_node.add_child(new_node)
-            else:
-                new_node = PageNode(title)
-                self.root_pages.append(new_node)
-        else:
-            new_node = PageNode(title)
-            self.root_pages.append(new_node)
+                return new_node
+
+        # Root page insertion logic
+        above, below, total = self.get_slide_counts()
+        
+        # Determine insertion index
+        insert_idx = len(self.root_pages)
+        if insert_after_id:
+            try:
+                ref_idx = next(i for i, n in enumerate(self.root_pages) if n.id == insert_after_id)
+                insert_idx = ref_idx + 1
+            except StopIteration:
+                pass
+
+        # Verify limits
+        if self.default_page_id is not None:  # Skip limit checks on initialization of default page
+            can_add, err_msg = self.can_add_root_page(insert_idx)
+            if not can_add:
+                raise ValueError(err_msg)
+
+        new_node = PageNode(title)
+        self.root_pages.insert(insert_idx, new_node)
             
         if self.active_page is None:
             self.active_page = new_node
