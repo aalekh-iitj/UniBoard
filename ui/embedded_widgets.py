@@ -3,388 +3,603 @@ from PySide6.QtWidgets import (
     QPlainTextEdit, QTextEdit, QLineEdit, QSplitter, QLabel, QFrame
 )
 from PySide6.QtGui import QFont, QColor
-from PySide6.QtCore import Qt, Signal, QUrl, QThread
+from PySide6.QtCore import Qt, Signal, QUrl
 from PySide6.QtWebEngineWidgets import QWebEngineView
-
 from core.compiler import CodeCompiler
 
-EMBEDDED_WIDGET_STYLE = """
-    QWidget {
-        background-color: #121214;
-        color: #e2e2e8;
-    }
-    QPushButton {
-        background-color: rgba(45, 45, 55, 0.8);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 6px;
-        color: #ffffff;
-        padding: 6px 14px;
-        font-size: 12px;
-        font-weight: bold;
-    }
-    QPushButton:hover {
-        background-color: rgba(65, 65, 80, 0.9);
-        border: 1px solid rgba(255, 255, 255, 0.2);
-    }
-    QPushButton:pressed {
-        background-color: rgba(138, 43, 226, 0.5);
-    }
-    QComboBox {
-        background-color: rgba(30, 30, 38, 0.85);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 5px;
-        color: #d1d1d6;
-        padding: 5px 10px;
-        min-width: 80px;
-    }
-    QComboBox:hover {
-        border: 1px solid rgba(255, 255, 255, 0.2);
-    }
-    QComboBox::drop-down {
-        border: none;
-        width: 22px;
-    }
-    QComboBox::down-arrow {
-        border-left: 5px solid transparent;
-        border-right: 5px solid transparent;
-        border-top: 6px solid #d1d1d6;
-    }
-    QComboBox QAbstractItemView {
-        background-color: rgba(22, 22, 26, 0.95);
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        color: #d1d1d6;
-        selection-background-color: rgba(138, 43, 226, 0.4);
-        selection-color: #ffffff;
-    }
-    QPlainTextEdit, QTextEdit {
-        background-color: rgba(15, 15, 18, 0.9);
+from PySide6.QtCore import QThread
+
+
+# ---------------------------------------------------------------------------
+# Shared stylesheet fragments
+# ---------------------------------------------------------------------------
+
+_DARK_GLASS_BG = (
+    "background: qlineargradient("
+    "  x1:0, y1:0, x2:1, y2:1,"
+    "  stop:0 rgba(18, 18, 30, 230),"
+    "  stop:1 rgba(30, 30, 50, 210)"
+    ");"
+)
+
+_BUTTON_BASE = """
+    QPushButton {{
+        background: qlineargradient(
+            x1:0, y1:0, x2:0, y2:1,
+            stop:0 {start}, stop:1 {end}
+        );
+        color: {fg};
         border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 6px;
-        color: #e2e2e8;
-        padding: 8px;
-    }
-    QLineEdit {
-        background-color: rgba(15, 15, 18, 0.9);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 6px;
-        color: #e2e2e8;
-        padding: 6px 10px;
+        border-radius: 8px;
+        padding: 7px 18px;
+        font-weight: 600;
+        font-size: 13px;
+    }}
+    QPushButton:hover {{
+        background: qlineargradient(
+            x1:0, y1:0, x2:0, y2:1,
+            stop:0 {hover_start}, stop:1 {hover_end}
+        );
+        border: 1px solid rgba(255, 255, 255, 0.18);
+    }}
+    QPushButton:pressed {{
+        background: {pressed};
+        border: 1px solid rgba(255, 255, 255, 0.25);
+    }}
+"""
+
+_ACCENT_BTN = _BUTTON_BASE.format(
+    start="rgba(99, 102, 241, 0.85)",
+    end="rgba(79, 70, 229, 0.90)",
+    fg="#f0f0ff",
+    hover_start="rgba(119, 122, 255, 0.95)",
+    hover_end="rgba(99, 90, 249, 1.0)",
+    pressed="rgba(67, 56, 202, 1.0)",
+)
+
+_GREEN_BTN = _BUTTON_BASE.format(
+    start="rgba(16, 185, 129, 0.85)",
+    end="rgba(5, 150, 105, 0.90)",
+    fg="#ecfdf5",
+    hover_start="rgba(36, 205, 149, 0.95)",
+    hover_end="rgba(16, 170, 125, 1.0)",
+    pressed="rgba(4, 120, 87, 1.0)",
+)
+
+_SUBTLE_BTN = _BUTTON_BASE.format(
+    start="rgba(55, 55, 75, 0.7)",
+    end="rgba(40, 40, 60, 0.8)",
+    fg="#c4c4d8",
+    hover_start="rgba(70, 70, 95, 0.85)",
+    hover_end="rgba(55, 55, 75, 0.9)",
+    pressed="rgba(35, 35, 55, 1.0)",
+)
+
+_EDITOR_STYLE = """
+    QPlainTextEdit {
+        background: rgba(10, 10, 18, 0.92);
+        color: #e2e8f0;
+        border: 1px solid rgba(99, 102, 241, 0.25);
+        border-radius: 8px;
+        padding: 10px;
+        selection-background-color: rgba(99, 102, 241, 0.4);
+        selection-color: #ffffff;
         font-size: 13px;
     }
+    QPlainTextEdit:focus {
+        border: 1px solid rgba(99, 102, 241, 0.55);
+    }
+"""
+
+_CONSOLE_STYLE = """
+    QTextEdit {
+        background: rgba(5, 5, 10, 0.95);
+        color: #a3e635;
+        border: 1px solid rgba(163, 230, 53, 0.15);
+        border-radius: 8px;
+        padding: 10px;
+        font-size: 13px;
+    }
+"""
+
+_COMBOBOX_STYLE = """
+    QComboBox {
+        background: rgba(30, 30, 50, 0.9);
+        color: #e2e8f0;
+        border: 1px solid rgba(99, 102, 241, 0.3);
+        border-radius: 8px;
+        padding: 6px 14px;
+        font-size: 13px;
+        font-weight: 500;
+        min-width: 130px;
+    }
+    QComboBox:hover {
+        border: 1px solid rgba(99, 102, 241, 0.55);
+    }
+    QComboBox::drop-down {
+        subcontrol-origin: padding;
+        subcontrol-position: top right;
+        width: 28px;
+        border-left: 1px solid rgba(99, 102, 241, 0.2);
+        border-top-right-radius: 8px;
+        border-bottom-right-radius: 8px;
+    }
+    QComboBox::down-arrow {
+        image: none;
+        border: none;
+    }
+    QComboBox QAbstractItemView {
+        background: rgba(20, 20, 38, 0.97);
+        color: #e2e8f0;
+        border: 1px solid rgba(99, 102, 241, 0.3);
+        selection-background-color: rgba(99, 102, 241, 0.4);
+        selection-color: #ffffff;
+        border-radius: 6px;
+        padding: 4px;
+    }
+"""
+
+_LINE_EDIT_STYLE = """
+    QLineEdit {
+        background: rgba(10, 10, 18, 0.9);
+        color: #e2e8f0;
+        border: 1px solid rgba(99, 102, 241, 0.25);
+        border-radius: 8px;
+        padding: 7px 14px;
+        font-size: 13px;
+        selection-background-color: rgba(99, 102, 241, 0.4);
+    }
     QLineEdit:focus {
-        border: 1px solid rgba(138, 43, 226, 0.8);
+        border: 1px solid rgba(99, 102, 241, 0.6);
     }
-    QLabel {
-        color: #b0b0b8;
-        font-size: 12px;
-    }
+"""
+
+_SPLITTER_STYLE = """
     QSplitter::handle {
-        background-color: rgba(255, 255, 255, 0.08);
-        width: 3px;
-        height: 3px;
+        background: rgba(99, 102, 241, 0.18);
+        border-radius: 2px;
     }
+    QSplitter::handle:horizontal { width: 3px; }
+    QSplitter::handle:vertical   { height: 3px; }
     QSplitter::handle:hover {
-        background-color: rgba(138, 43, 226, 0.5);
+        background: rgba(99, 102, 241, 0.45);
     }
 """
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+#  1. HTMLRenderWidget
+# ═══════════════════════════════════════════════════════════════════════════
+
 class HTMLRenderWidget(QWidget):
+    """Live HTML editor & renderer with a toggleable editor panel."""
+
     html_changed = Signal(str)
 
-    def __init__(self, initial_html="", parent=None):
+    def __init__(self, initial_html: str = "", parent: QWidget | None = None):
         super().__init__(parent)
-        self.setStyleSheet(EMBEDDED_WIDGET_STYLE)
+        self._build_ui(initial_html)
 
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+    # -- UI construction -----------------------------------------------------
 
-        # Top bar with toggle
-        top_bar = QHBoxLayout()
-        top_bar.setContentsMargins(8, 6, 8, 6)
-        top_bar.setSpacing(8)
+    def _build_ui(self, initial_html: str) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        lbl = QLabel("HTML / CSS Editor")
-        lbl.setStyleSheet("font-weight: bold; font-size: 13px; color: #8a2be2;")
-        top_bar.addWidget(lbl)
+        # Splitter: web view | editor panel
+        self._splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        self._splitter.setStyleSheet(_SPLITTER_STYLE)
+        self._splitter.setHandleWidth(3)
 
-        top_bar.addStretch()
+        # — Web view —
+        self._web = QWebEngineView(self)
+        self._web.setHtml(initial_html or _placeholder_html("HTML Renderer"))
+        self._splitter.addWidget(self._web)
 
-        self.render_btn = QPushButton("Render HTML")
-        self.render_btn.clicked.connect(self.apply_html)
-        top_bar.addWidget(self.render_btn)
+        # — Editor panel —
+        self._editor_panel = QFrame(self)
+        self._editor_panel.setStyleSheet(
+            f"QFrame {{ {_DARK_GLASS_BG} border-left: 1px solid rgba(99,102,241,0.18); }}"
+        )
+        ep_layout = QVBoxLayout(self._editor_panel)
+        ep_layout.setContentsMargins(14, 14, 14, 14)
+        ep_layout.setSpacing(10)
 
-        self.toggle_btn = QPushButton("Show Editor")
-        self.toggle_btn.setCheckable(True)
-        self.toggle_btn.toggled.connect(self.toggle_editor)
-        top_bar.addWidget(self.toggle_btn)
+        # Header
+        header = QLabel("✦ HTML Editor")
+        header.setStyleSheet(
+            "color: #c7d2fe; font-size: 15px; font-weight: 700; padding: 2px 0;"
+        )
+        ep_layout.addWidget(header)
 
-        main_layout.addLayout(top_bar)
+        # Code editor
+        self._editor = QPlainTextEdit()
+        self._editor.setFont(QFont("Consolas", 12))
+        self._editor.setStyleSheet(_EDITOR_STYLE)
+        self._editor.setPlainText(initial_html)
+        self._editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        ep_layout.addWidget(self._editor, 1)
 
-        # Splitter
-        self.splitter = QSplitter(Qt.Vertical)
+        # Buttons row
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
 
-        # Web view
-        self.web_view = QWebEngineView()
-        self.web_view.setHtml(initial_html if initial_html else "<html><body style='background:#121214;display:flex;align-items:center;justify-content:center;height:100vh;margin:0'><p style='color:#666;font-family:sans-serif'>Enter HTML code and click Render</p></body></html>")
-        self.splitter.addWidget(self.web_view)
+        self._render_btn = QPushButton("▶  Render HTML")
+        self._render_btn.setStyleSheet(_ACCENT_BTN)
+        self._render_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._render_btn.clicked.connect(self.apply_html)
+        btn_row.addWidget(self._render_btn)
 
-        # Editor panel
-        self.editor_panel = QWidget()
-        editor_layout = QVBoxLayout(self.editor_panel)
-        editor_layout.setContentsMargins(8, 8, 8, 8)
-        editor_layout.setSpacing(6)
+        self._hide_btn = QPushButton("✕  Hide Editor")
+        self._hide_btn.setStyleSheet(_SUBTLE_BTN)
+        self._hide_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._hide_btn.clicked.connect(self.toggle_editor)
+        btn_row.addWidget(self._hide_btn)
 
-        editor_lbl = QLabel("HTML / CSS Source Code:")
-        editor_lbl.setStyleSheet("font-weight: bold; color: #8a2be2;")
-        editor_layout.addWidget(editor_lbl)
+        btn_row.addStretch()
+        ep_layout.addLayout(btn_row)
 
-        self.editor = QPlainTextEdit()
-        self.editor.setFont(QFont("Consolas", 11))
-        self.editor.setPlainText(initial_html)
-        editor_layout.addWidget(self.editor)
+        self._splitter.addWidget(self._editor_panel)
+        self._splitter.setStretchFactor(0, 3)
+        self._splitter.setStretchFactor(1, 2)
 
-        self.splitter.addWidget(self.editor_panel)
-        self.splitter.setSizes([500, 250])
-        self.splitter.setCollapsible(1, True)
+        root.addWidget(self._splitter)
 
-        main_layout.addWidget(self.splitter)
-        self.editor_panel.setVisible(False)
+        # — Floating edit toggle button (overlaid on web view) —
+        self._toggle_btn = QPushButton("✏️ Edit HTML", self)
+        self._toggle_btn.setStyleSheet(
+            """
+            QPushButton {
+                background: rgba(99, 102, 241, 0.82);
+                color: #f0f0ff;
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 10px;
+                padding: 8px 18px;
+                font-weight: 700;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background: rgba(119, 122, 255, 0.95);
+                border: 1px solid rgba(255, 255, 255, 0.25);
+            }
+            """
+        )
+        self._toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._toggle_btn.clicked.connect(self.toggle_editor)
+        self._toggle_btn.raise_()
 
-    def toggle_editor(self, visible):
-        self.editor_panel.setVisible(visible)
-        self.toggle_btn.setText("Hide Editor" if visible else "Show Editor")
-        if visible:
-            self.splitter.setSizes([400, 250])
+        # Editor hidden by default (presentation mode)
+        self._editor_panel.setVisible(False)
 
-    def apply_html(self):
-        html_code = self.editor.toPlainText()
-        self.web_view.setHtml(html_code)
-        self.html_changed.emit(html_code)
+    # -- Geometry helpers ----------------------------------------------------
 
-    def set_html(self, html_code):
-        self.editor.setPlainText(html_code)
-        self.web_view.setHtml(html_code)
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._reposition_toggle_btn()
+
+    def _reposition_toggle_btn(self) -> None:
+        btn = self._toggle_btn
+        margin = 16
+        btn.adjustSize()
+        btn.move(self.width() - btn.width() - margin, margin)
+
+    # -- Public API ----------------------------------------------------------
+
+    def toggle_editor(self) -> None:
+        visible = self._editor_panel.isVisible()
+        self._editor_panel.setVisible(not visible)
+        self._toggle_btn.setText("✏️ Edit HTML" if visible else "✏️ Hide Editor")
+
+    def apply_html(self) -> None:
+        html = self._editor.toPlainText()
+        self._web.setHtml(html)
+        self.html_changed.emit(html)
+
+    def set_html(self, html_code: str) -> None:
+        self._editor.setPlainText(html_code)
+        self._web.setHtml(html_code)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  2. CompilerWidget  (+ module-level thread)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class CompilerRunThread(QThread):
+    """Background thread for code execution — defined at module level so
+    PySide6 can register the Signal correctly."""
+
+    finished = Signal(str, str, int)
+
+    def __init__(self, code: str, lang: str, parent=None):
+        super().__init__(parent)
+        self.code = code
+        self.lang = lang
+
+    def run(self) -> None:
+        stdout, stderr, returncode = CodeCompiler.run_code(self.code, self.lang)
+        self.finished.emit(stdout, stderr, returncode)
 
 
 class CompilerWidget(QWidget):
-    code_changed = Signal(str, str)
+    """Code editor + console output with background compilation."""
 
-    def __init__(self, initial_code="", initial_lang="Python", parent=None):
+    code_changed = Signal(str, str)  # (code, language)
+
+    def __init__(
+        self,
+        initial_code: str = "",
+        initial_lang: str = "Python",
+        parent: QWidget | None = None,
+    ):
         super().__init__(parent)
-        self.setStyleSheet(EMBEDDED_WIDGET_STYLE)
+        self._thread: CompilerRunThread | None = None
+        self._build_ui(initial_code, initial_lang)
 
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(8, 8, 8, 8)
-        main_layout.setSpacing(8)
+    # -- UI construction -----------------------------------------------------
 
-        # Controls bar
-        controls_layout = QHBoxLayout()
-        controls_layout.setSpacing(8)
+    def _build_ui(self, initial_code: str, initial_lang: str) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        lang_lbl = QLabel("Language:")
-        controls_layout.addWidget(lang_lbl)
+        # — Toolbar —
+        toolbar = QFrame(self)
+        toolbar.setStyleSheet(
+            f"QFrame {{ {_DARK_GLASS_BG} border-bottom: 1px solid rgba(99,102,241,0.15); }}"
+        )
+        tb_layout = QHBoxLayout(toolbar)
+        tb_layout.setContentsMargins(14, 10, 14, 10)
+        tb_layout.setSpacing(10)
 
-        self.lang_box = QComboBox()
-        self.lang_box.addItems(["Python", "JavaScript"])
-        self.lang_box.setCurrentText(initial_lang)
-        self.lang_box.currentTextChanged.connect(self.on_lang_changed)
-        controls_layout.addWidget(self.lang_box)
+        # Language selector
+        self._lang_combo = QComboBox()
+        self._lang_combo.addItems(["Python", "JavaScript"])
+        self._lang_combo.setCurrentText(initial_lang)
+        self._lang_combo.setStyleSheet(_COMBOBOX_STYLE)
+        self._lang_combo.currentTextChanged.connect(self._on_lang_changed)
+        tb_layout.addWidget(self._lang_combo)
 
-        controls_layout.addSpacing(10)
+        tb_layout.addStretch()
 
-        self.run_btn = QPushButton("Run Code")
-        self.run_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(0, 170, 102, 0.8);
-                color: white;
-                font-weight: bold;
-                border-radius: 6px;
-                padding: 6px 20px;
-            }
-            QPushButton:hover { background-color: rgba(0, 200, 130, 0.9); }
-            QPushButton:disabled { background-color: rgba(80, 80, 80, 0.5); color: #888; }
-        """)
-        self.run_btn.clicked.connect(self.run_code)
-        controls_layout.addWidget(self.run_btn)
+        # Run button
+        self._run_btn = QPushButton("⚡  Run Code")
+        self._run_btn.setStyleSheet(_GREEN_BTN)
+        self._run_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._run_btn.clicked.connect(self.run_code)
+        tb_layout.addWidget(self._run_btn)
 
-        controls_layout.addStretch()
+        root.addWidget(toolbar)
 
-        clear_btn = QPushButton("Clear Output")
-        clear_btn.setStyleSheet("padding: 5px 12px; font-size: 11px;")
-        clear_btn.clicked.connect(lambda: self.console.clear())
-        controls_layout.addWidget(clear_btn)
-
-        main_layout.addLayout(controls_layout)
-
-        # Splitter: editor + console
-        self.splitter = QSplitter(Qt.Vertical)
+        # — Splitter: editor | console —
+        self._splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        self._splitter.setStyleSheet(_SPLITTER_STYLE)
+        self._splitter.setHandleWidth(3)
 
         # Code editor
-        editor_frame = QFrame()
-        editor_frame.setStyleSheet("QFrame { border: 1px solid rgba(255,255,255,0.06); border-radius: 6px; }")
-        ef_layout = QVBoxLayout(editor_frame)
-        ef_layout.setContentsMargins(6, 6, 6, 6)
-        ef_layout.setSpacing(4)
-
-        ed_lbl = QLabel("Source Code:")
-        ed_lbl.setStyleSheet("font-weight: bold; color: #8a2be2; font-size: 11px;")
-        ef_layout.addWidget(ed_lbl)
-
-        self.editor = QPlainTextEdit()
-        self.editor.setFont(QFont("Consolas", 11))
-        self.editor.setPlainText(initial_code)
-        self.editor.textChanged.connect(self.on_text_changed)
-        ef_layout.addWidget(self.editor)
-
-        self.splitter.addWidget(editor_frame)
+        self._editor = QPlainTextEdit()
+        self._editor.setFont(QFont("Consolas", 12))
+        self._editor.setStyleSheet(_EDITOR_STYLE)
+        self._editor.setPlainText(initial_code)
+        self._editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self._editor.setTabStopDistance(32.0)
+        self._editor.textChanged.connect(self._emit_code_changed)
+        self._splitter.addWidget(self._editor)
 
         # Console output
-        console_frame = QFrame()
-        console_frame.setStyleSheet("QFrame { border: 1px solid rgba(255,255,255,0.06); border-radius: 6px; }")
-        cf_layout = QVBoxLayout(console_frame)
-        cf_layout.setContentsMargins(6, 6, 6, 6)
-        cf_layout.setSpacing(4)
+        self._console = QTextEdit()
+        self._console.setReadOnly(True)
+        self._console.setFont(QFont("Consolas", 12))
+        self._console.setStyleSheet(_CONSOLE_STYLE)
+        self._console.setPlaceholderText("Console output will appear here…")
+        self._splitter.addWidget(self._console)
 
-        con_lbl = QLabel("Console Output:")
-        con_lbl.setStyleSheet("font-weight: bold; color: #8a2be2; font-size: 11px;")
-        cf_layout.addWidget(con_lbl)
+        self._splitter.setStretchFactor(0, 3)
+        self._splitter.setStretchFactor(1, 2)
+        root.addWidget(self._splitter, 1)
 
-        self.console = QTextEdit()
-        self.console.setReadOnly(True)
-        self.console.setFont(QFont("Consolas", 11))
-        self.console.setStyleSheet("background-color: #08080a; color: #00ff66; border: 1px solid rgba(255,255,255,0.04); border-radius: 4px;")
-        cf_layout.addWidget(self.console)
+    # -- Slots ---------------------------------------------------------------
 
-        self.splitter.addWidget(console_frame)
-        self.splitter.setSizes([300, 200])
+    def _on_lang_changed(self, lang: str) -> None:
+        self._emit_code_changed()
 
-        main_layout.addWidget(self.splitter)
+    def _emit_code_changed(self) -> None:
+        self.code_changed.emit(
+            self._editor.toPlainText(),
+            self._lang_combo.currentText(),
+        )
 
-    def on_lang_changed(self, lang):
-        self.on_text_changed()
+    def run_code(self) -> None:
+        code = self._editor.toPlainText()
+        lang = self._lang_combo.currentText()
 
-    def on_text_changed(self):
-        self.code_changed.emit(self.editor.toPlainText(), self.lang_box.currentText())
+        self._console.clear()
+        self._console.setTextColor(QColor("#94a3b8"))
+        self._console.append(f"⏳ Running {lang}…\n")
+        self._run_btn.setEnabled(False)
 
-    def run_code(self):
-        lang = self.lang_box.currentText().lower()
-        code = self.editor.toPlainText()
-        self.console.setText("[Executing...]")
-        self.run_btn.setEnabled(False)
+        self._thread = CompilerRunThread(code, lang, self)
+        self._thread.finished.connect(self._on_run_finished)
+        self._thread.start()
 
-        class RunThread(QThread):
-            finished = Signal(str, str, int)
-            def __init__(self, c, l):
-                super().__init__()
-                self.c = c
-                self.l = l
-            def run(self):
-                o, e, r = CodeCompiler.run_code(self.c, self.l)
-                self.finished.emit(o, e, r)
+    def _on_run_finished(self, stdout: str, stderr: str, returncode: int) -> None:
+        self._console.clear()
 
-        self.runner = RunThread(code, lang)
-        self.runner.finished.connect(self.on_run_finished)
-        self.runner.start()
-
-    def on_run_finished(self, stdout, stderr, code):
-        self.run_btn.setEnabled(True)
-        self.console.clear()
         if stdout:
-            self.console.setTextColor(QColor("#00ff66"))
-            self.console.append(stdout)
+            self._console.setTextColor(QColor("#4ade80"))  # green
+            self._console.append(stdout)
+
         if stderr:
-            self.console.setTextColor(QColor("#ff3333"))
-            self.console.append(stderr)
-        if not stdout and not stderr:
-            self.console.setTextColor(QColor("#ffffff"))
-            self.console.append(f"[Finished with exit code {code}]")
+            self._console.setTextColor(QColor("#f87171"))  # red
+            self._console.append(stderr)
 
-    def set_content(self, code, lang):
-        self.editor.blockSignals(True)
-        self.editor.setPlainText(code)
-        self.editor.blockSignals(False)
-        self.lang_box.setCurrentText(lang)
+        # Status footer
+        if returncode == 0:
+            self._console.setTextColor(QColor("#4ade80"))
+            self._console.append("\n✔ Process exited with code 0")
+        else:
+            self._console.setTextColor(QColor("#f87171"))
+            self._console.append(f"\n✘ Process exited with code {returncode}")
 
+        self._run_btn.setEnabled(True)
+        self._thread = None
+
+    # -- Public API ----------------------------------------------------------
+
+    def set_content(self, code: str, lang: str) -> None:
+        self._editor.setPlainText(code)
+        idx = self._lang_combo.findText(lang)
+        if idx >= 0:
+            self._lang_combo.setCurrentIndex(idx)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  3. BrowserWidget
+# ═══════════════════════════════════════════════════════════════════════════
 
 class BrowserWidget(QWidget):
+    """Minimal embedded web browser with navigation controls."""
+
     url_changed = Signal(str)
 
-    def __init__(self, initial_url="https://www.google.com", parent=None):
+    def __init__(
+        self,
+        initial_url: str = "https://www.google.com",
+        parent: QWidget | None = None,
+    ):
         super().__init__(parent)
-        self.setStyleSheet(EMBEDDED_WIDGET_STYLE)
+        self._build_ui(initial_url)
 
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+    # -- UI construction -----------------------------------------------------
 
-        # Navigation bar
-        nav_bar = QHBoxLayout()
-        nav_bar.setContentsMargins(8, 6, 8, 6)
-        nav_bar.setSpacing(6)
+    def _build_ui(self, initial_url: str) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        self.back_btn = QPushButton("<")
-        self.back_btn.setFixedWidth(32)
-        self.back_btn.clicked.connect(self.navigate_back)
-        nav_bar.addWidget(self.back_btn)
+        # — Navigation bar —
+        nav = QFrame(self)
+        nav.setStyleSheet(
+            f"QFrame {{ {_DARK_GLASS_BG} border-bottom: 1px solid rgba(99,102,241,0.15); }}"
+        )
+        nav_layout = QHBoxLayout(nav)
+        nav_layout.setContentsMargins(10, 8, 10, 8)
+        nav_layout.setSpacing(6)
 
-        self.forward_btn = QPushButton(">")
-        self.forward_btn.setFixedWidth(32)
-        self.forward_btn.clicked.connect(self.navigate_forward)
-        nav_bar.addWidget(self.forward_btn)
+        nav_btn_style = """
+            QPushButton {
+                background: rgba(40, 40, 60, 0.8);
+                color: #c4c4d8;
+                border: 1px solid rgba(255, 255, 255, 0.06);
+                border-radius: 8px;
+                font-size: 15px;
+                min-width: 38px;
+                max-width: 38px;
+                min-height: 34px;
+                max-height: 34px;
+            }
+            QPushButton:hover {
+                background: rgba(60, 60, 85, 0.9);
+                color: #e2e8f0;
+                border: 1px solid rgba(99, 102, 241, 0.35);
+            }
+            QPushButton:pressed {
+                background: rgba(30, 30, 50, 1.0);
+            }
+        """
 
-        self.reload_btn = QPushButton("Refresh")
-        self.reload_btn.setFixedWidth(60)
-        self.reload_btn.clicked.connect(self.navigate_reload)
-        nav_bar.addWidget(self.reload_btn)
+        self._back_btn = QPushButton("⬅️")
+        self._back_btn.setStyleSheet(nav_btn_style)
+        self._back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._back_btn.setToolTip("Back")
+        self._back_btn.clicked.connect(self.navigate_back)
+        nav_layout.addWidget(self._back_btn)
 
-        self.url_bar = QLineEdit()
-        self.url_bar.setPlaceholderText("Enter URL...")
-        self.url_bar.setText(initial_url)
-        self.url_bar.returnPressed.connect(self.load_url)
-        nav_bar.addWidget(self.url_bar)
+        self._fwd_btn = QPushButton("➡️")
+        self._fwd_btn.setStyleSheet(nav_btn_style)
+        self._fwd_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._fwd_btn.setToolTip("Forward")
+        self._fwd_btn.clicked.connect(self.navigate_forward)
+        nav_layout.addWidget(self._fwd_btn)
 
-        self.go_btn = QPushButton("Go")
-        self.go_btn.setFixedWidth(45)
-        self.go_btn.clicked.connect(self.load_url)
-        nav_bar.addWidget(self.go_btn)
+        self._reload_btn = QPushButton("🔄")
+        self._reload_btn.setStyleSheet(nav_btn_style)
+        self._reload_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._reload_btn.setToolTip("Reload")
+        self._reload_btn.clicked.connect(self.navigate_reload)
+        nav_layout.addWidget(self._reload_btn)
 
-        main_layout.addLayout(nav_bar)
+        # URL bar
+        self._url_bar = QLineEdit()
+        self._url_bar.setStyleSheet(_LINE_EDIT_STYLE)
+        self._url_bar.setPlaceholderText("Enter URL…")
+        self._url_bar.setText(initial_url)
+        self._url_bar.returnPressed.connect(self.load_url)
+        nav_layout.addWidget(self._url_bar, 1)
 
-        # Separator line
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet("background-color: rgba(255,255,255,0.08); max-height: 1px;")
-        main_layout.addWidget(sep)
+        # Go button
+        self._go_btn = QPushButton("Go")
+        self._go_btn.setStyleSheet(_ACCENT_BTN)
+        self._go_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._go_btn.clicked.connect(self.load_url)
+        nav_layout.addWidget(self._go_btn)
 
-        # WebEngine Browser View
-        self.web_view = QWebEngineView()
-        self.web_view.load(QUrl(initial_url))
-        self.web_view.urlChanged.connect(self.on_url_loaded)
-        main_layout.addWidget(self.web_view)
+        root.addWidget(nav)
 
-    def load_url(self):
-        url_text = self.url_bar.text().strip()
-        if not url_text:
+        # — Web view —
+        self._web = QWebEngineView(self)
+        self._web.setUrl(QUrl(initial_url))
+        self._web.urlChanged.connect(self._on_url_loaded)
+        root.addWidget(self._web, 1)
+
+    # -- Navigation ----------------------------------------------------------
+
+    def load_url(self) -> None:
+        url = self._url_bar.text().strip()
+        if not url:
             return
-        if not url_text.startswith("http://") and not url_text.startswith("https://"):
-            url_text = "https://" + url_text
-        self.web_view.load(QUrl(url_text))
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        self._url_bar.setText(url)
+        self._web.setUrl(QUrl(url))
 
-    def navigate_back(self):
-        self.web_view.back()
+    def navigate_back(self) -> None:
+        self._web.back()
 
-    def navigate_forward(self):
-        self.web_view.forward()
+    def navigate_forward(self) -> None:
+        self._web.forward()
 
-    def navigate_reload(self):
-        self.web_view.reload()
+    def navigate_reload(self) -> None:
+        self._web.reload()
 
-    def on_url_loaded(self, qurl):
-        self.url_bar.setText(qurl.toString())
-        self.url_changed.emit(qurl.toString())
+    def _on_url_loaded(self, qurl: QUrl) -> None:
+        url_str = qurl.toString()
+        self._url_bar.setText(url_str)
+        self.url_changed.emit(url_str)
 
-    def set_url(self, url):
-        self.url_bar.setText(url)
-        self.web_view.load(QUrl(url))
+    # -- Public API ----------------------------------------------------------
+
+    def set_url(self, url: str) -> None:
+        self._url_bar.setText(url)
+        self._web.setUrl(QUrl(url))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Helpers
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _placeholder_html(title: str) -> str:
+    """Return a minimal dark placeholder page."""
+    return f"""<!DOCTYPE html>
+<html>
+<head><style>
+  body {{
+    margin: 0; height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+    background: #0f0f1a; color: #6366f1;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+  }}
+  h1 {{ font-weight: 300; font-size: 28px; opacity: .65; }}
+</style></head>
+<body><h1>{title}</h1></body>
+</html>"""
