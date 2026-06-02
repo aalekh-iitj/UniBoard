@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QDockWidget, QToolBar, QToolButton,
     QLabel, QComboBox, QSpinBox, QColorDialog, QFileDialog,
     QMessageBox, QInputDialog, QStackedWidget, QWidget, QHBoxLayout,
-    QSizePolicy
+    QSizePolicy, QFrame
 )
 
 import config
@@ -82,6 +82,9 @@ class MainWindow(QMainWindow):
         self.setup_docks()
         self.setup_toolbar()
 
+        # ---- Connect canvas signals ----
+        self.canvas.new_canvas_requested.connect(self.add_new_canvas)
+
         # ---- Load default page ----
         if self.page_manager.active_page:
             self.canvas.set_page_node(self.page_manager.active_page)
@@ -102,6 +105,9 @@ class MainWindow(QMainWindow):
         self.sidebar_widget = SidebarWidget(self.page_manager, self)
         self.left_dock.setWidget(self.sidebar_widget)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.left_dock)
+        # Left pane is hidden – topic/subtopic management moved to the canvas itself
+        self.left_dock.hide()
+        self.left_dock.setVisible(False)
 
         self.sidebar_widget.page_selected.connect(self.on_page_selected)
         self.sidebar_widget.delete_page_requested.connect(self.on_delete_page_requested)
@@ -154,25 +160,101 @@ class MainWindow(QMainWindow):
         self.color_btn.clicked.connect(self.choose_color)
         tb.addWidget(self.color_btn)
 
-        # ── Brush size ─────────────────────────────────────────────────
+        # ── Brush size (prominent, clearly visible) ────────────────────
+        brush_box = QFrame()
+        brush_box.setObjectName("sizeBoxBrush")
+        brush_box.setStyleSheet("""
+            QFrame#sizeBoxBrush {
+                background-color: rgba(0, 255, 204, 0.10);
+                border: 2px solid rgba(0, 255, 204, 0.55);
+                border-radius: 8px;
+            }
+            QFrame#sizeBoxBrush:hover {
+                background-color: rgba(0, 255, 204, 0.18);
+                border: 2px solid rgba(0, 255, 204, 0.85);
+            }
+        """)
+        brush_layout = QHBoxLayout(brush_box)
+        brush_layout.setContentsMargins(6, 2, 6, 2)
+        brush_layout.setSpacing(6)
+
+        brush_icon = QLabel("◉")
+        brush_icon.setStyleSheet(
+            "color: #00ffcc; font-size: 18px; font-weight: bold; background: transparent; border: none;"
+        )
+        brush_icon.setToolTip("Brush / Stroke Size")
+        brush_layout.addWidget(brush_icon)
+
         self.size_spin = QSpinBox()
         self.size_spin.setRange(1, 50)
         self.size_spin.setValue(self.canvas.pen_width)
-        self.size_spin.setFixedWidth(50)
-        self.size_spin.setToolTip("Brush / Stroke Size")
-        self.size_spin.setPrefix("⊘ ")
+        self.size_spin.setFixedWidth(52)
+        self.size_spin.setMinimumHeight(28)
+        self.size_spin.setToolTip("Brush / Stroke Size  (1-50 px)")
+        self.size_spin.setStyleSheet("""
+            QSpinBox {
+                background-color: rgba(0, 0, 0, 0.45);
+                border: 1px solid rgba(0, 255, 204, 0.4);
+                border-radius: 4px;
+                color: #00ffcc;
+                font-size: 14px;
+                font-weight: bold;
+                padding: 2px 4px;
+            }
+            QSpinBox:hover { border: 1px solid rgba(0, 255, 204, 0.7); }
+            QSpinBox:focus { border: 1px solid #00ffcc; }
+        """)
         self.size_spin.valueChanged.connect(self.change_pen_size)
-        tb.addWidget(self.size_spin)
+        brush_layout.addWidget(self.size_spin)
+        tb.addWidget(brush_box)
 
-        # ── Text size ──────────────────────────────────────────────────
+        # ── Text size (prominent, clearly visible) ─────────────────────
+        text_box = QFrame()
+        text_box.setObjectName("sizeBoxText")
+        text_box.setStyleSheet("""
+            QFrame#sizeBoxText {
+                background-color: rgba(168, 85, 247, 0.10);
+                border: 2px solid rgba(168, 85, 247, 0.55);
+                border-radius: 8px;
+            }
+            QFrame#sizeBoxText:hover {
+                background-color: rgba(168, 85, 247, 0.18);
+                border: 2px solid rgba(168, 85, 247, 0.85);
+            }
+        """)
+        text_layout = QHBoxLayout(text_box)
+        text_layout.setContentsMargins(6, 2, 6, 2)
+        text_layout.setSpacing(6)
+
+        text_icon = QLabel("A")
+        text_icon.setStyleSheet(
+            "color: #c4b5fd; font-size: 18px; font-weight: bold; background: transparent; border: none; font-family: 'Segoe UI';"
+        )
+        text_icon.setToolTip("Text Font Size")
+        text_layout.addWidget(text_icon)
+
         self.text_spin = QSpinBox()
         self.text_spin.setRange(8, 72)
         self.text_spin.setValue(self.canvas.text_size)
-        self.text_spin.setFixedWidth(50)
-        self.text_spin.setToolTip("Text Font Size")
-        self.text_spin.setPrefix("A ")
+        self.text_spin.setFixedWidth(52)
+        self.text_spin.setMinimumHeight(28)
+        self.text_spin.setToolTip("Text Font Size  (8-72 pt)")
+        self.text_spin.setStyleSheet("""
+            QSpinBox {
+                background-color: rgba(0, 0, 0, 0.45);
+                border: 1px solid rgba(168, 85, 247, 0.4);
+                border-radius: 4px;
+                color: #c4b5fd;
+                font-size: 14px;
+                font-weight: bold;
+                padding: 2px 4px;
+            }
+            QSpinBox:hover { border: 1px solid rgba(168, 85, 247, 0.7); }
+            QSpinBox:focus { border: 1px solid #c4b5fd; }
+        """)
         self.text_spin.valueChanged.connect(self.change_text_size)
-        tb.addWidget(self.text_spin)
+        text_layout.addWidget(self.text_spin)
+        tb.addWidget(text_box)
 
         tb.addSeparator()
 
@@ -570,3 +652,22 @@ class MainWindow(QMainWindow):
             node.title = new_title.strip()
             if self.page_manager.active_page == node:
                 self.canvas.refresh_agenda_overlay()
+
+    def add_new_canvas(self):
+        """Create a new blank page/canvas and switch to it."""
+        title, ok = QInputDialog.getText(
+            self, "New Canvas", "Enter canvas title:"
+        )
+        if not ok or not title.strip():
+            return
+        try:
+            new_node = self.page_manager.create_page(title.strip())
+        except ValueError as e:
+            QMessageBox.warning(self, "Limit Exceeded", str(e))
+            return
+        self.page_manager.active_page = new_node
+        self.canvas.set_page_node(new_node)
+        self.stack.setCurrentWidget(self.canvas)
+        self._cleanup_embedded()
+        # Make sure the plain-canvas overlays are shown
+        self.canvas.update_overlay_visibility()

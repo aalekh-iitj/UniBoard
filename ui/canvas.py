@@ -2,7 +2,7 @@ from PySide6.QtWidgets import (
     QGraphicsView, QGraphicsScene, QGraphicsPathItem, QGraphicsRectItem,
     QGraphicsEllipseItem, QGraphicsLineItem, QGraphicsTextItem, QInputDialog,
     QLabel, QVBoxLayout, QGraphicsProxyWidget, QGraphicsItem,
-    QWidget, QScrollBar
+    QWidget, QScrollBar, QToolButton
 )
 from PySide6.QtGui import (
     QPainter, QPen, QBrush, QColor, QPainterPath, QFont, QCursor
@@ -49,6 +49,45 @@ class MovablePathItem(QGraphicsPathItem):
         self.setFlag(QGraphicsItem.ItemIsMovable, True)
 
 
+class MovableTextItem(QGraphicsTextItem):
+    """A text item that the user can select, move (with the Select tool),
+    and edit (on double-click).
+
+    Unlike the default Qt behaviour with ``TextEditorInteraction`` (which
+    swallows the first click into edit-mode and prevents the user from
+    grabbing the item to reposition it), this subclass:
+
+    * Never auto-enters edit mode on a single click.
+    * Is *only* movable while the Select tool is active – the canvas
+      toggles ``ItemIsMovable`` on/off via ``_set_text_items_movable``.
+    * Opens an input dialog on *double-click* to edit the text.
+    """
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self.setFlag(QGraphicsItem.ItemIsSelectable, True)
+        self.setFlag(QGraphicsItem.ItemSendsGeometryChanges, True)
+        # ItemIsMovable is intentionally left unset here – the canvas
+        # sets it based on whichever tool is currently active so that
+        # drawing tools can paint over the items without dragging them.
+        # NOTE: we deliberately do NOT call setTextInteractionFlags so the
+        # item never auto-enters edit mode on single click.
+
+    def shape(self):
+        """Return a slightly padded rectangle so the item is easy to grab."""
+        rect = self.boundingRect()
+        return QPainterPath().addRect(rect.adjusted(-10, -6, 10, 6))
+
+    def mouseDoubleClickEvent(self, event):
+        """Open an input dialog to edit the text."""
+        from PySide6.QtWidgets import QInputDialog
+        new_text, ok = QInputDialog.getText(
+            None, "Edit Text", "Enter text:", text=self.toPlainText()
+        )
+        if ok and new_text is not None:
+            self.setPlainText(new_text)
+        super().mouseDoubleClickEvent(event)
+
+
 # ---------------------------------------------------------------------------
 # Main Whiteboard Canvas
 # ---------------------------------------------------------------------------
@@ -56,6 +95,7 @@ class WhiteboardCanvas(QGraphicsView):
     stroke_drawn = Signal()
     selection_changed = Signal()
     canvas_type_changed = Signal(str)
+    new_canvas_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -94,6 +134,16 @@ class WhiteboardCanvas(QGraphicsView):
         self.last_point = QPointF()
         self.current_item = None
 
+        # Manual drag-state for the Select tool.  ``QGraphicsView`` with
+        # ``NoDrag`` mode does *not* start item drags on its own, so we
+        # implement selection + drag-to-move explicitly here.
+        self._drag_item = None
+        self._drag_offset = QPointF()
+
+        # Ensure mouse-move events are delivered even when no button is
+        # pressed (useful for live cursor feedback).
+        self.setMouseTracking(True)
+
         # Undo/Redo stacks
         self.undo_stack = []
         self.redo_stack = []
@@ -127,6 +177,9 @@ class WhiteboardCanvas(QGraphicsView):
         self.active_node = node
         self.set_page_scene(node.scene)
         self.current_canvas_type = node.meta.get("canvas_type", config.CANVAS_PLAIN)
+        # Refresh movability of the freshly loaded scene's text items
+        # according to whichever tool is currently active.
+        self._set_text_items_movable(self.current_tool == config.MODE_SELECT)
         self.refresh_agenda_overlay()
         self.update_overlay_visibility()
 
@@ -144,15 +197,21 @@ class WhiteboardCanvas(QGraphicsView):
     # ------------------------------------------------------------------
     def set_tool(self, tool_mode):
         self.current_tool = tool_mode
-        if tool_mode == config.MODE_SELECT:
-            self.setDragMode(QGraphicsView.RubberBandDrag)
-            self.setCursor(Qt.ArrowCursor)
-        elif tool_mode == config.MODE_ERASER:
-            self.setDragMode(QGraphicsView.NoDrag)
-            self.setCursor(Qt.CrossCursor)
-        else:
-            self.setDragMode(QGraphicsView.NoDrag)
-            self.setCursor(Qt.CrossCursor)
+        is_select = (tool_mode == config.MODE_SELECT)
+        # Use NoDrag in *all* modes – RubberBandDrag would prevent the
+        # user from clicking on a text item to select & move it.
+        self.setDragMode(QGraphicsView.NoDrag)
+        self.setCursor(Qt.ArrowCursor if is_select else Qt.CrossCursor)
+        # Text items are only movable while the Select tool is active.
+        self._set_text_items_movable(is_select)
+
+    def _set_text_items_movable(self, movable):
+        """Enable or disable movement on every text item in the current scene."""
+        if not self.scene():
+            return
+        for item in self.scene().items():
+            if isinstance(item, QGraphicsTextItem):
+                item.setFlag(QGraphicsItem.ItemIsMovable, movable)
 
     # ------------------------------------------------------------------
     # Overlay Visibility
@@ -160,14 +219,20 @@ class WhiteboardCanvas(QGraphicsView):
     def update_overlay_visibility(self):
         canvas_type = getattr(self, "current_canvas_type", config.CANVAS_PLAIN)
         is_plain = (canvas_type == config.CANVAS_PLAIN)
-        self.title_overlay.setVisible(is_plain)
-        self.agenda_overlay.setVisible(is_plain)
+        # The legacy title/agenda overlays are permanently hidden – topic
+        # and subtopic items now live directly on the canvas.
+        self.title_overlay.setVisible(False)
+        self.agenda_overlay.setVisible(False)
+        # The "+" buttons are only meaningful on the plain drawing canvas
+        self.add_topic_btn.setVisible(is_plain)
+        self.add_subtopic_btn.setVisible(is_plain)
+        self.new_canvas_btn.setVisible(is_plain)
 
     # ------------------------------------------------------------------
     # Viewport Overlays
     # ------------------------------------------------------------------
     def setup_viewport_overlays(self):
-        # Title overlay – floats at top center
+        # Title overlay – floats at top center (hidden, replaced by on-canvas topic)
         self.title_overlay = QLabel(self)
         self.title_overlay.setAlignment(Qt.AlignCenter)
         self.title_overlay.setStyleSheet("""
@@ -183,9 +248,9 @@ class WhiteboardCanvas(QGraphicsView):
             }
         """)
         self.title_overlay.setText("UniBoard")
-        self.title_overlay.show()
+        self.title_overlay.hide()
 
-        # Agenda overlay – floats on left side
+        # Agenda overlay – floats on left side (hidden, replaced by on-canvas subtopics)
         self.agenda_overlay = QWidget(self)
         self.agenda_layout = QVBoxLayout(self.agenda_overlay)
         self.agenda_layout.setContentsMargins(12, 12, 12, 12)
@@ -213,21 +278,95 @@ class WhiteboardCanvas(QGraphicsView):
             }
         """)
         self.agenda_overlay.setObjectName("agendaContainer")
-        self.agenda_overlay.show()
+        self.agenda_overlay.hide()
+
+        # ---- On-canvas "+" buttons (replaces the left-pane sidebar) ----
+        btn_style_purple = """
+            QToolButton {
+                background-color: rgba(138, 43, 226, 0.55);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                border-radius: 16px;
+                color: white;
+                font-size: 20px;
+                font-weight: bold;
+            }
+            QToolButton:hover {
+                background-color: rgba(138, 43, 226, 0.85);
+                border: 1px solid rgba(255, 255, 255, 0.4);
+            }
+        """
+        btn_style_blue = """
+            QToolButton {
+                background-color: rgba(59, 130, 246, 0.55);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                border-radius: 16px;
+                color: white;
+                font-size: 20px;
+                font-weight: bold;
+            }
+            QToolButton:hover {
+                background-color: rgba(59, 130, 246, 0.85);
+                border: 1px solid rgba(255, 255, 255, 0.4);
+            }
+        """
+        btn_style_green = """
+            QToolButton {
+                background-color: rgba(34, 197, 94, 0.55);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                border-radius: 18px;
+                color: white;
+                font-size: 22px;
+                font-weight: bold;
+            }
+            QToolButton:hover {
+                background-color: rgba(34, 197, 94, 0.85);
+                border: 1px solid rgba(255, 255, 255, 0.4);
+            }
+        """
+
+        # "+ Title" button – top center
+        self.add_topic_btn = QToolButton(self)
+        self.add_topic_btn.setText("+")
+        self.add_topic_btn.setToolTip("Add Topic Title")
+        self.add_topic_btn.setFixedSize(32, 32)
+        self.add_topic_btn.setStyleSheet(btn_style_purple)
+        self.add_topic_btn.setCursor(Qt.PointingHandCursor)
+        self.add_topic_btn.clicked.connect(self.add_topic)
+        self.add_topic_btn.show()
+
+        # "+ Subtopic" button – left side, always visible
+        self.add_subtopic_btn = QToolButton(self)
+        self.add_subtopic_btn.setText("+")
+        self.add_subtopic_btn.setToolTip("Add Subtopic")
+        self.add_subtopic_btn.setFixedSize(32, 32)
+        self.add_subtopic_btn.setStyleSheet(btn_style_blue)
+        self.add_subtopic_btn.setCursor(Qt.PointingHandCursor)
+        self.add_subtopic_btn.clicked.connect(self.add_subtopic)
+        self.add_subtopic_btn.show()
+
+        # "+ Canvas" button – right bottom corner
+        self.new_canvas_btn = QToolButton(self)
+        self.new_canvas_btn.setText("+")
+        self.new_canvas_btn.setToolTip("New Canvas")
+        self.new_canvas_btn.setFixedSize(40, 40)
+        self.new_canvas_btn.setStyleSheet(btn_style_green)
+        self.new_canvas_btn.setCursor(Qt.PointingHandCursor)
+        self.new_canvas_btn.clicked.connect(self.request_new_canvas)
+        self.new_canvas_btn.show()
 
     def update_overlay_widgets(self):
         """Position overlays correctly inside the viewport."""
         w = self.viewport().width()
         h = self.viewport().height()
 
-        # Title: top center
+        # Title: top center (hidden, kept for compatibility)
         title_size = self.title_overlay.sizeHint()
         tw = min(title_size.width(), w - 40)
         self.title_overlay.setGeometry(
             int((w - tw) / 2), 14, tw, title_size.height()
         )
 
-        # Agenda: middle left
+        # Agenda: middle left (hidden, kept for compatibility)
         agenda_size = self.agenda_overlay.sizeHint()
         ah = min(agenda_size.height(), h - 60)
         aw = min(200, w - 30)
@@ -235,51 +374,46 @@ class WhiteboardCanvas(QGraphicsView):
             16, int((h - ah) / 2), aw, ah
         )
 
+        # ---- Position the on-canvas "+" buttons ----
+        btn_size = 32
+        # "+ Title" – top center
+        self.add_topic_btn.setGeometry(
+            int((w - btn_size) / 2), 14, btn_size, btn_size
+        )
+        # "+ Subtopic" – left side, below the title area, always visible
+        self.add_subtopic_btn.setGeometry(
+            16, 60, btn_size, btn_size
+        )
+        # "+ Canvas" – right bottom corner
+        ncb_size = 40
+        self.new_canvas_btn.setGeometry(
+            w - ncb_size - 20, h - ncb_size - 20, ncb_size, ncb_size
+        )
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.update_overlay_widgets()
 
     def refresh_agenda_overlay(self):
-        """Rebuild the agenda from the current node's children."""
-        # Clear existing items
-        for i in reversed(range(self.agenda_layout.count())):
-            widget = self.agenda_layout.itemAt(i).widget()
-            if widget:
-                widget.setParent(None)
+        """No-op: topic and subtopics are now drawn directly on the canvas.
 
-        if not self.active_node:
-            self.agenda_overlay.hide()
-            return
+        Kept as a stub for backward compatibility with any callers.
+        """
+        # Ensure legacy overlays stay hidden regardless of who calls this.
+        self.title_overlay.setVisible(False)
+        self.agenda_overlay.setVisible(False)
+        return
 
-        canvas_type = self.active_node.meta.get("canvas_type", config.CANVAS_PLAIN)
-        if canvas_type != config.CANVAS_PLAIN:
-            self.agenda_overlay.hide()
-            self.title_overlay.setText(self.active_node.title)
-            self.title_overlay.adjustSize()
-            self.update_overlay_widgets()
-            return
-
-        self.agenda_overlay.show()
-        self.title_overlay.setText(self.active_node.title)
-        self.title_overlay.adjustSize()
-
-        # Header
-        hdr = QLabel("OUTLINE")
-        hdr.setProperty("class", "agendaTitle")
-        self.agenda_layout.addWidget(hdr)
-
-        # Subtopics
-        subtopics = self.active_node.children
-        if not subtopics:
-            empty_lbl = QLabel("No subtopics yet")
-            empty_lbl.setStyleSheet("color: #555566; font-style: italic; font-size: 11px; padding: 4px 8px;")
-            self.agenda_layout.addWidget(empty_lbl)
-        else:
-            for node in subtopics:
-                lbl = QLabel(f"  {node.title}")
-                lbl.setProperty("class", "agendaItem")
-                lbl.setWordWrap(True)
-                self.agenda_layout.addWidget(lbl)
+        # The block below is unreachable dead code (kept for safety only).
+        # Subtopics are now drawn directly on the canvas as MovableTextItem
+        # instances via add_topic() / add_subtopic().
+        # ---- unreachable ----
+        subtopics = self.active_node.children if self.active_node else []
+        for node in subtopics:
+            lbl = QLabel(f"  {node.title}")
+            lbl.setProperty("class", "agendaItem")
+            lbl.setWordWrap(True)
+            self.agenda_layout.addWidget(lbl)
 
         self.agenda_overlay.adjustSize()
         self.update_overlay_widgets()
@@ -335,11 +469,43 @@ class WhiteboardCanvas(QGraphicsView):
             self.setCursor(Qt.ClosedHandCursor)
             return
 
-        # Select mode – delegate to base
+        # ------------------------------------------------------------------
+        # Select tool – handle item selection + drag-to-move manually.
+        # QGraphicsView with NoDrag does not start drags on its own, and
+        # RubberBandDrag would prevent clicking on items from selecting
+        # them.  Doing it ourselves guarantees the click-and-drag works.
+        # ------------------------------------------------------------------
         if self.current_tool == config.MODE_SELECT:
-            super().mousePressEvent(event)
+            # Find the topmost item under the cursor.
+            item = self.itemAt(event.pos())
+            # Walk up the parent chain so a click on a child proxy still
+            # resolves to the top-level text item.
+            top_text_item = None
+            while item is not None:
+                if isinstance(item, QGraphicsTextItem):
+                    top_text_item = item
+                    break
+                item = item.parentItem()
+
+            if top_text_item is not None:
+                # Select this item (single-selection for now).
+                self.scene().clearSelection()
+                top_text_item.setSelected(True)
+                # Start a manual drag if the item is movable.
+                if top_text_item.flags() & QGraphicsItem.ItemIsMovable:
+                    self._drag_item = top_text_item
+                    self._drag_offset = scene_pos - top_text_item.scenePos()
+                else:
+                    self._drag_item = None
+            else:
+                # Clicked on empty space – clear selection.
+                self.scene().clearSelection()
+                self._drag_item = None
             return
 
+        # ------------------------------------------------------------------
+        # Drawing tools
+        # ------------------------------------------------------------------
         self.is_drawing = True
         self.last_point = scene_pos
         self.redo_stack.clear()
@@ -392,13 +558,14 @@ class WhiteboardCanvas(QGraphicsView):
         elif self.current_tool == config.MODE_TEXT:
             text, ok = QInputDialog.getMultiLineText(self, "Add Text", "Enter text:")
             if ok and text.strip():
-                text_item = QGraphicsTextItem(text)
+                text_item = MovableTextItem(text)
                 text_item.setDefaultTextColor(self.pen_color)
                 text_item.setFont(QFont("Segoe UI", self.text_size))
                 text_item.setPos(scene_pos)
-                text_item.setFlag(QGraphicsTextItem.ItemIsMovable, True)
-                text_item.setFlag(QGraphicsTextItem.ItemIsSelectable, True)
-                text_item.setTextInteractionFlags(Qt.TextEditorInteraction)
+                text_item.setFlag(
+                    QGraphicsItem.ItemIsMovable,
+                    self.current_tool == config.MODE_SELECT,
+                )
                 self.scene().addItem(text_item)
                 self.undo_stack.append(("add", text_item))
             self.is_drawing = False
@@ -415,6 +582,15 @@ class WhiteboardCanvas(QGraphicsView):
             self.pan_start = event.pos()
             self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
             self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
+            return
+
+        # ------------------------------------------------------------------
+        # Select tool – if a drag is in progress, move the item.
+        # ------------------------------------------------------------------
+        if self.current_tool == config.MODE_SELECT and self._drag_item is not None:
+            new_pos = scene_pos - self._drag_offset
+            self._drag_item.setPos(new_pos)
+            self._drag_item.setSelected(True)
             return
 
         if not self.is_drawing:
@@ -462,6 +638,13 @@ class WhiteboardCanvas(QGraphicsView):
             self.setCursor(
                 Qt.ArrowCursor if self.current_tool == config.MODE_SELECT else Qt.CrossCursor
             )
+            return
+
+        # ------------------------------------------------------------------
+        # Select tool – end the manual drag if one is in progress.
+        # ------------------------------------------------------------------
+        if self.current_tool == config.MODE_SELECT:
+            self._drag_item = None
             return
 
         if not self.is_drawing:
@@ -518,6 +701,128 @@ class WhiteboardCanvas(QGraphicsView):
         super().keyPressEvent(event)
 
     # ------------------------------------------------------------------
+    # On-Canvas Topic & Subtopic Management
+    # ------------------------------------------------------------------
+    DATA_KEY_ROLE = Qt.UserRole + 1   # distinguishes "topic" vs "subtopic"
+
+    def _find_topic_item(self):
+        """Return the single topic QGraphicsTextItem in the scene, or None."""
+        for item in self.scene().items():
+            if isinstance(item, QGraphicsTextItem):
+                if item.data(self.DATA_KEY_ROLE) == "topic":
+                    return item
+        return None
+
+    def _find_subtopic_items(self):
+        """Return all subtopic QGraphicsTextItems in the scene, ordered by y."""
+        items = []
+        for item in self.scene().items():
+            if isinstance(item, QGraphicsTextItem):
+                if item.data(self.DATA_KEY_ROLE) == "subtopic":
+                    items.append(item)
+        items.sort(key=lambda it: it.pos().y())
+        return items
+
+    def add_topic(self):
+        """Add (or focus) the single topic title text item on the canvas.
+
+        The resulting item is fully movable – the user can click and drag
+        it to any position on the canvas.  Double-click opens an edit
+        dialog to change the text.
+        """
+        # Only one topic allowed per canvas – if it exists, just focus it.
+        existing = self._find_topic_item()
+        if existing is not None:
+            self.scene().clearSelection()
+            existing.setSelected(True)
+            self.centerOn(existing)
+            return
+
+        text, ok = QInputDialog.getText(
+            self, "Add Topic", "Enter topic title:"
+        )
+        if not ok or not text.strip():
+            return
+
+        # Use MovableTextItem so the item is draggable (with Select tool)
+        # and is edited only via double-click (no auto-edit-on-click).
+        item = MovableTextItem(text.strip())
+        item.setData(self.DATA_KEY_ROLE, "topic")
+        item.setDefaultTextColor(QColor("#ffffff"))
+        item.setFont(QFont("Segoe UI", 22, QFont.Bold))
+        item.setZValue(10)  # keep topic on top of drawings
+        # ItemIsMovable is set after addItem so it reflects the active tool.
+
+        # Position: a bit below the top-center of the current viewport,
+        # well inside the visible area so the user immediately sees and
+        # can grab the new item.
+        vp = self.viewport().rect()
+        scene_pt = self.mapToScene(
+            QPoint(int(vp.width() / 2 - 120), int(vp.height() / 2 - 80))
+        )
+        item.setPos(scene_pt)
+
+        self.scene().addItem(item)
+        # Set movability after the item is in the scene, based on the
+        # currently active tool.
+        item.setFlag(
+            QGraphicsItem.ItemIsMovable,
+            self.current_tool == config.MODE_SELECT,
+        )
+        self.undo_stack.append(("add", item))
+
+    def add_subtopic(self):
+        """Add a new subtopic text item on the canvas (always shown).
+
+        Like the topic, subtopics are ``MovableTextItem`` instances that
+        can be freely dragged anywhere on the canvas.
+        """
+        text, ok = QInputDialog.getText(
+            self, "Add Subtopic", "Enter subtopic:"
+        )
+        if not ok or not text.strip():
+            return
+
+        item = MovableTextItem(text.strip())
+        item.setData(self.DATA_KEY_ROLE, "subtopic")
+        item.setDefaultTextColor(QColor("#c4b5fd"))
+        item.setFont(QFont("Segoe UI", 16))
+        item.setZValue(10)
+
+        # Position: below the last subtopic, or below the topic, or default
+        subs = self._find_subtopic_items()
+        if subs:
+            last = subs[-1]
+            new_x = last.pos().x()
+            new_y = last.pos().y() + last.boundingRect().height() + 16
+        else:
+            topic = self._find_topic_item()
+            if topic:
+                new_x = topic.pos().x() + 20
+                new_y = topic.pos().y() + topic.boundingRect().height() + 36
+            else:
+                vp = self.viewport().rect()
+                scene_pt = self.mapToScene(
+                    QPoint(int(vp.width() / 2 - 120), int(vp.height() / 2 + 20))
+                )
+                new_x = scene_pt.x()
+                new_y = scene_pt.y()
+
+        item.setPos(new_x, new_y)
+        self.scene().addItem(item)
+        # Set movability after the item is in the scene, based on the
+        # currently active tool.
+        item.setFlag(
+            QGraphicsItem.ItemIsMovable,
+            self.current_tool == config.MODE_SELECT,
+        )
+        self.undo_stack.append(("add", item))
+
+    def request_new_canvas(self):
+        """Emit a signal asking the main window to create a new page/canvas."""
+        self.new_canvas_requested.emit()
+
+    # ------------------------------------------------------------------
     # Handwriting Recognition
     # ------------------------------------------------------------------
     def trigger_handwriting_recognition(self):
@@ -563,13 +868,17 @@ class WhiteboardCanvas(QGraphicsView):
 
         scene_pos = self.mapToScene(QPoint(int(vp_x), int(vp_y)))
 
-        text_item = QGraphicsTextItem(text)
+        text_item = MovableTextItem(text)
         text_item.setDefaultTextColor(self.pen_color)
         text_item.setFont(QFont("Segoe UI", self.text_size, QFont.Bold))
         text_item.setPos(scene_pos)
-        text_item.setFlag(QGraphicsTextItem.ItemIsMovable, True)
-        text_item.setFlag(QGraphicsTextItem.ItemIsSelectable, True)
         self.scene().addItem(text_item)
+        # Set movability after the item is in the scene, based on the
+        # currently active tool.
+        text_item.setFlag(
+            QGraphicsItem.ItemIsMovable,
+            self.current_tool == config.MODE_SELECT,
+        )
         self.undo_stack.append(("add", text_item))
 
     # ------------------------------------------------------------------
