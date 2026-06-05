@@ -75,7 +75,9 @@ class MovableTextItem(QGraphicsTextItem):
     def shape(self):
         """Return a slightly padded rectangle so the item is easy to grab."""
         rect = self.boundingRect()
-        return QPainterPath().addRect(rect.adjusted(-10, -6, 10, 6))
+        path = QPainterPath()
+        path.addRect(rect.adjusted(-10, -6, 10, 6))
+        return path
 
     def mouseDoubleClickEvent(self, event):
         """Open an input dialog to edit the text."""
