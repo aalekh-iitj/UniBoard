@@ -209,6 +209,15 @@ class Themes:
             background: transparent;
         }
 
+        /* ===== QDialog ===== */
+        QDialog {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                stop:0 rgba(18, 18, 30, 242),
+                stop:1 rgba(22, 22, 38, 232));
+            border: 1px solid rgba(138, 43, 226, 0.20);
+            border-radius: 14px;
+        }
+
         /* ===== ComboBox ===== */
         QComboBox {
             background: rgba(18, 18, 28, 0.88);
@@ -408,6 +417,38 @@ class Themes:
 
         QMenuBar::item:pressed {
             background: rgba(138, 43, 226, 0.45);
+        }
+
+        /* ===== QMenu (Dropdown) ===== */
+        QMenu {
+            background: rgba(18, 18, 26, 0.97);
+            border: 1px solid rgba(138, 43, 226, 0.25);
+            border-radius: 10px;
+            padding: 6px 4px;
+            margin: 2px;
+        }
+
+        QMenu::item {
+            padding: 8px 32px 8px 16px;
+            border-radius: 5px;
+            margin: 2px 6px;
+            color: #d0d0d8;
+            font-size: 13px;
+        }
+
+        QMenu::item:selected {
+            background: rgba(138, 43, 226, 0.28);
+            color: #ffffff;
+        }
+
+        QMenu::item:pressed {
+            background: rgba(138, 43, 226, 0.45);
+        }
+
+        QMenu::separator {
+            height: 1px;
+            background: rgba(255, 255, 255, 0.06);
+            margin: 4px 16px;
         }
 
         /* ===== Status Bar ===== */
@@ -621,6 +662,15 @@ class Themes:
             background: transparent;
         }
 
+        /* ===== QDialog ===== */
+        QDialog {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                stop:0 rgba(255, 255, 255, 248),
+                stop:1 rgba(248, 248, 252, 245));
+            border: 1px solid rgba(0, 0, 0, 0.10);
+            border-radius: 14px;
+        }
+
         /* ===== ComboBox ===== */
         QComboBox {
             background: rgba(255, 255, 255, 0.95);
@@ -820,6 +870,38 @@ class Themes:
 
         QMenuBar::item:pressed {
             background: rgba(0, 102, 255, 0.22);
+        }
+
+        /* ===== QMenu (Dropdown) ===== */
+        QMenu {
+            background: rgba(255, 255, 255, 0.98);
+            border: 1px solid rgba(0, 0, 0, 0.10);
+            border-radius: 10px;
+            padding: 6px 4px;
+            margin: 2px;
+        }
+
+        QMenu::item {
+            padding: 8px 32px 8px 16px;
+            border-radius: 5px;
+            margin: 2px 6px;
+            color: #3a3a4a;
+            font-size: 13px;
+        }
+
+        QMenu::item:selected {
+            background: rgba(0, 102, 255, 0.12);
+            color: #0055dd;
+        }
+
+        QMenu::item:pressed {
+            background: rgba(0, 102, 255, 0.22);
+        }
+
+        QMenu::separator {
+            height: 1px;
+            background: rgba(0, 0, 0, 0.06);
+            margin: 4px 16px;
         }
 
         /* ===== Status Bar ===== */
@@ -1023,6 +1105,13 @@ class Themes:
             background: transparent;
         }
 
+        /* ===== QDialog ===== */
+        QDialog {
+            background: #1e293b;
+            border: 1px solid rgba(59, 130, 246, 0.20);
+            border-radius: 12px;
+        }
+
         /* ===== ComboBox ===== */
         QComboBox {
             background: #1e293b;
@@ -1215,6 +1304,38 @@ class Themes:
 
         QMenuBar::item:pressed {
             background: rgba(59, 130, 246, 0.35);
+        }
+
+        /* ===== QMenu (Dropdown) ===== */
+        QMenu {
+            background: #1e293b;
+            border: 1px solid rgba(59, 130, 246, 0.20);
+            border-radius: 10px;
+            padding: 6px 4px;
+            margin: 2px;
+        }
+
+        QMenu::item {
+            padding: 8px 32px 8px 16px;
+            border-radius: 5px;
+            margin: 2px 6px;
+            color: #cbd5e1;
+            font-size: 13px;
+        }
+
+        QMenu::item:selected {
+            background: rgba(59, 130, 246, 0.22);
+            color: #e2e8f0;
+        }
+
+        QMenu::item:pressed {
+            background: rgba(59, 130, 246, 0.35);
+        }
+
+        QMenu::separator {
+            height: 1px;
+            background: rgba(255, 255, 255, 0.06);
+            margin: 4px 16px;
         }
 
         /* ===== Status Bar ===== */

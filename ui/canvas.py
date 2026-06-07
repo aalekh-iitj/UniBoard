@@ -82,8 +82,9 @@ class MovableTextItem(QGraphicsTextItem):
     def mouseDoubleClickEvent(self, event):
         """Open an input dialog to edit the text."""
         from PySide6.QtWidgets import QInputDialog
+        view = self.scene().views()[0] if self.scene() and self.scene().views() else None
         new_text, ok = QInputDialog.getText(
-            None, "Edit Text", "Enter text:", text=self.toPlainText()
+            view, "Edit Text", "Enter text:", text=self.toPlainText()
         )
         if ok and new_text is not None:
             self.setPlainText(new_text)

@@ -8,12 +8,12 @@ from PySide6.QtGui import (
     QAction, QColor, QFont, QKeySequence, QPixmap, QIcon,
     QShortcut, QPainter, QPen
 )
-from PySide6.QtCore import Qt, QSize, QRect
+from PySide6.QtCore import Qt, QSize, QRect, QRectF
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QDockWidget, QToolBar, QToolButton,
     QLabel, QComboBox, QSpinBox, QColorDialog, QFileDialog,
     QMessageBox, QInputDialog, QStackedWidget, QWidget, QHBoxLayout,
-    QSizePolicy, QFrame
+    QSizePolicy, QFrame, QMenuBar, QMenu
 )
 
 import config
@@ -29,14 +29,31 @@ from utils.pdf_export import export_images_to_pdf
 # Helper: Create a colored icon from a Unicode symbol
 # ---------------------------------------------------------------------------
 def _make_icon(symbol: str, size: int = 28, color: str = "#d1d1d6") -> QIcon:
-    """Render a Unicode symbol onto a QPixmap and return it as a QIcon."""
+    """Render a Unicode symbol onto a QPixmap with a subtle glow effect.
+
+    Uses anti-aliased text with a translucent shadow layer so the icon
+    reads clearly against any toolbar background.
+    """
     pixmap = QPixmap(size, size)
-    pixmap.fill(QColor(0, 0, 0, 0))  # transparent background
+    pixmap.fill(QColor(0, 0, 0, 0))
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.Antialiasing)
-    painter.setPen(QPen(QColor(color)))
-    painter.setFont(QFont("Segoe UI Emoji", int(size * 0.6)))
-    painter.drawText(QRect(0, 0, size, size), Qt.AlignCenter, symbol)
+    painter.setRenderHint(QPainter.SmoothPixmapTransform)
+
+    font_size = int(size * 0.58)
+    f = QFont("Segoe UI Symbol", font_size)
+    f.setStyleStrategy(QFont.PreferAntialias)
+    painter.setFont(f)
+
+    # Subtle offset shadow / glow
+    shadow = QColor(color)
+    shadow.setAlpha(55)
+    painter.setPen(QPen(shadow, 1.2))
+    painter.drawText(QRectF(1.2, 1.8, size, size), Qt.AlignCenter, symbol)
+
+    # Main foreground
+    painter.setPen(QPen(QColor(color), 1.2))
+    painter.drawText(QRectF(0, 0, size, size), Qt.AlignCenter, symbol)
     painter.end()
     return QIcon(pixmap)
 
@@ -85,6 +102,9 @@ class MainWindow(QMainWindow):
         # ---- Connect canvas signals ----
         self.canvas.new_canvas_requested.connect(self.add_new_canvas)
 
+        # ---- Menu bar ----
+        self.setup_menubar()
+
         # ---- Load default page ----
         if self.page_manager.active_page:
             self.canvas.set_page_node(self.page_manager.active_page)
@@ -95,6 +115,67 @@ class MainWindow(QMainWindow):
 
         # ---- Shortcuts ----
         self.create_shortcuts()
+
+    # ==================================================================
+    # Menu Bar (File / Edit / View)
+    # ==================================================================
+    def setup_menubar(self):
+        mb = self.menuBar()
+
+        # ── File ──────────────────────────────────────────────────────
+        file_menu = mb.addMenu("File")
+        act_new = QAction("New Canvas", self)
+        act_new.setShortcut(QKeySequence.New)
+        act_new.triggered.connect(self.add_new_canvas)
+        file_menu.addAction(act_new)
+
+        act_pdf = QAction("Export PDF…", self)
+        act_pdf.setShortcut(QKeySequence("Ctrl+E"))
+        act_pdf.triggered.connect(self.export_to_pdf)
+        file_menu.addAction(act_pdf)
+
+        file_menu.addSeparator()
+
+        act_exit = QAction("Exit", self)
+        act_exit.setShortcut(QKeySequence.Quit)
+        act_exit.triggered.connect(self.close)
+        file_menu.addAction(act_exit)
+
+        # ── Edit ──────────────────────────────────────────────────────
+        edit_menu = mb.addMenu("Edit")
+        act_undo = QAction("Undo", self)
+        act_undo.setShortcut(QKeySequence.Undo)
+        act_undo.triggered.connect(self.canvas.undo)
+        edit_menu.addAction(act_undo)
+
+        act_redo = QAction("Redo", self)
+        act_redo.setShortcut(QKeySequence("Ctrl+Y"))
+        act_redo.triggered.connect(self.canvas.redo)
+        edit_menu.addAction(act_redo)
+
+        # ── View ──────────────────────────────────────────────────────
+        view_menu = mb.addMenu("View")
+
+        act_grid = QAction("Toggle Grid", self)
+        act_grid.setShortcut(QKeySequence("Ctrl+G"))
+        act_grid.setCheckable(True)
+        act_grid.setChecked(True)
+        act_grid.triggered.connect(lambda checked: self.toggle_grid(checked))
+        view_menu.addAction(act_grid)
+
+        act_fs = QAction("Fullscreen", self)
+        act_fs.setShortcut(QKeySequence("F11"))
+        act_fs.triggered.connect(self.toggle_fullscreen)
+        view_menu.addAction(act_fs)
+
+        view_menu.addSeparator()
+
+        theme_menu = QMenu("Theme", self)
+        for theme_name in ["Dark Glass", "Light Glass", "Slate"]:
+            a = QAction(theme_name, self)
+            a.triggered.connect(lambda checked, n=theme_name: self.apply_theme(n))
+            theme_menu.addAction(a)
+        view_menu.addMenu(theme_menu)
 
     # ==================================================================
     # Dock (Outline Sidebar)
@@ -314,7 +395,7 @@ class MainWindow(QMainWindow):
 
         # ── PDF export ─────────────────────────────────────────────────
         pdf_btn = QToolButton()
-        pdf_btn.setIcon(_make_icon("📄", 28, "#d1d1d6"))
+        pdf_btn.setIcon(_make_icon("📕", 28, "#f87171"))
         pdf_btn.setToolTip("Export to PDF  (Ctrl+E)")
         pdf_btn.setFixedSize(36, 32)
         pdf_btn.clicked.connect(self.export_to_pdf)
