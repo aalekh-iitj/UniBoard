@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QDockWidget, QToolBar, QToolButton,
     QLabel, QComboBox, QSpinBox, QColorDialog, QFileDialog,
     QMessageBox, QInputDialog, QStackedWidget, QWidget, QHBoxLayout,
-    QSizePolicy, QFrame, QMenuBar, QMenu
+    QSizePolicy, QFrame
 )
 
 import config
@@ -102,9 +102,6 @@ class MainWindow(QMainWindow):
         # ---- Connect canvas signals ----
         self.canvas.new_canvas_requested.connect(self.add_new_canvas)
 
-        # ---- Menu bar ----
-        self.setup_menubar()
-
         # ---- Load default page ----
         if self.page_manager.active_page:
             self.canvas.set_page_node(self.page_manager.active_page)
@@ -115,67 +112,6 @@ class MainWindow(QMainWindow):
 
         # ---- Shortcuts ----
         self.create_shortcuts()
-
-    # ==================================================================
-    # Menu Bar (File / Edit / View)
-    # ==================================================================
-    def setup_menubar(self):
-        mb = self.menuBar()
-
-        # ── File ──────────────────────────────────────────────────────
-        file_menu = mb.addMenu("File")
-        act_new = QAction("New Canvas", self)
-        act_new.setShortcut(QKeySequence.New)
-        act_new.triggered.connect(self.add_new_canvas)
-        file_menu.addAction(act_new)
-
-        act_pdf = QAction("Export PDF…", self)
-        act_pdf.setShortcut(QKeySequence("Ctrl+E"))
-        act_pdf.triggered.connect(self.export_to_pdf)
-        file_menu.addAction(act_pdf)
-
-        file_menu.addSeparator()
-
-        act_exit = QAction("Exit", self)
-        act_exit.setShortcut(QKeySequence.Quit)
-        act_exit.triggered.connect(self.close)
-        file_menu.addAction(act_exit)
-
-        # ── Edit ──────────────────────────────────────────────────────
-        edit_menu = mb.addMenu("Edit")
-        act_undo = QAction("Undo", self)
-        act_undo.setShortcut(QKeySequence.Undo)
-        act_undo.triggered.connect(self.canvas.undo)
-        edit_menu.addAction(act_undo)
-
-        act_redo = QAction("Redo", self)
-        act_redo.setShortcut(QKeySequence("Ctrl+Y"))
-        act_redo.triggered.connect(self.canvas.redo)
-        edit_menu.addAction(act_redo)
-
-        # ── View ──────────────────────────────────────────────────────
-        view_menu = mb.addMenu("View")
-
-        act_grid = QAction("Toggle Grid", self)
-        act_grid.setShortcut(QKeySequence("Ctrl+G"))
-        act_grid.setCheckable(True)
-        act_grid.setChecked(True)
-        act_grid.triggered.connect(lambda checked: self.toggle_grid(checked))
-        view_menu.addAction(act_grid)
-
-        act_fs = QAction("Fullscreen", self)
-        act_fs.setShortcut(QKeySequence("F11"))
-        act_fs.triggered.connect(self.toggle_fullscreen)
-        view_menu.addAction(act_fs)
-
-        view_menu.addSeparator()
-
-        theme_menu = QMenu("Theme", self)
-        for theme_name in ["Dark Glass", "Light Glass", "Slate"]:
-            a = QAction(theme_name, self)
-            a.triggered.connect(lambda checked, n=theme_name: self.apply_theme(n))
-            theme_menu.addAction(a)
-        view_menu.addMenu(theme_menu)
 
     # ==================================================================
     # Dock (Outline Sidebar)
@@ -242,9 +178,9 @@ class MainWindow(QMainWindow):
         tb.addWidget(self.color_btn)
 
         # ── Brush size (prominent, clearly visible) ────────────────────
-        brush_box = QFrame()
-        brush_box.setObjectName("sizeBoxBrush")
-        brush_box.setStyleSheet("""
+        self.brush_box = QFrame()
+        self.brush_box.setObjectName("sizeBoxBrush")
+        self.brush_box.setStyleSheet("""
             QFrame#sizeBoxBrush {
                 background-color: rgba(0, 255, 204, 0.10);
                 border: 2px solid rgba(0, 255, 204, 0.55);
@@ -255,7 +191,7 @@ class MainWindow(QMainWindow):
                 border: 2px solid rgba(0, 255, 204, 0.85);
             }
         """)
-        brush_layout = QHBoxLayout(brush_box)
+        brush_layout = QHBoxLayout(self.brush_box)
         brush_layout.setContentsMargins(6, 2, 6, 2)
         brush_layout.setSpacing(6)
 
@@ -269,7 +205,7 @@ class MainWindow(QMainWindow):
         self.size_spin = QSpinBox()
         self.size_spin.setRange(1, 50)
         self.size_spin.setValue(self.canvas.pen_width)
-        self.size_spin.setFixedWidth(52)
+        self.size_spin.setFixedWidth(60)
         self.size_spin.setMinimumHeight(28)
         self.size_spin.setToolTip("Brush / Stroke Size  (1-50 px)")
         self.size_spin.setStyleSheet("""
@@ -287,12 +223,12 @@ class MainWindow(QMainWindow):
         """)
         self.size_spin.valueChanged.connect(self.change_pen_size)
         brush_layout.addWidget(self.size_spin)
-        tb.addWidget(brush_box)
+        tb.addWidget(self.brush_box)
 
         # ── Text size (prominent, clearly visible) ─────────────────────
-        text_box = QFrame()
-        text_box.setObjectName("sizeBoxText")
-        text_box.setStyleSheet("""
+        self.text_box = QFrame()
+        self.text_box.setObjectName("sizeBoxText")
+        self.text_box.setStyleSheet("""
             QFrame#sizeBoxText {
                 background-color: rgba(168, 85, 247, 0.10);
                 border: 2px solid rgba(168, 85, 247, 0.55);
@@ -303,7 +239,7 @@ class MainWindow(QMainWindow):
                 border: 2px solid rgba(168, 85, 247, 0.85);
             }
         """)
-        text_layout = QHBoxLayout(text_box)
+        text_layout = QHBoxLayout(self.text_box)
         text_layout.setContentsMargins(6, 2, 6, 2)
         text_layout.setSpacing(6)
 
@@ -317,7 +253,7 @@ class MainWindow(QMainWindow):
         self.text_spin = QSpinBox()
         self.text_spin.setRange(8, 72)
         self.text_spin.setValue(self.canvas.text_size)
-        self.text_spin.setFixedWidth(52)
+        self.text_spin.setFixedWidth(60)
         self.text_spin.setMinimumHeight(28)
         self.text_spin.setToolTip("Text Font Size  (8-72 pt)")
         self.text_spin.setStyleSheet("""
@@ -335,7 +271,7 @@ class MainWindow(QMainWindow):
         """)
         self.text_spin.valueChanged.connect(self.change_text_size)
         text_layout.addWidget(self.text_spin)
-        tb.addWidget(text_box)
+        tb.addWidget(self.text_box)
 
         tb.addSeparator()
 
@@ -378,7 +314,7 @@ class MainWindow(QMainWindow):
         # ── Theme combo ────────────────────────────────────────────────
         self.theme_combo = QComboBox()
         self.theme_combo.addItems(["Dark Glass", "Light Glass", "Slate"])
-        self.theme_combo.setFixedWidth(100)
+        self.theme_combo.setFixedWidth(145)
         self.theme_combo.setToolTip("Theme")
         self.theme_combo.currentTextChanged.connect(self.apply_theme)
         tb.addWidget(self.theme_combo)
@@ -386,7 +322,7 @@ class MainWindow(QMainWindow):
         # ── Canvas mode combo ──────────────────────────────────────────
         self.canvas_type_combo = QComboBox()
         self.canvas_type_combo.addItems(["Canvas", "HTML", "Compiler", "Browser"])
-        self.canvas_type_combo.setFixedWidth(90)
+        self.canvas_type_combo.setFixedWidth(130)
         self.canvas_type_combo.setToolTip("Canvas Type")
         self.canvas_type_combo.currentTextChanged.connect(self.on_canvas_type_changed)
         tb.addWidget(self.canvas_type_combo)
@@ -429,6 +365,61 @@ class MainWindow(QMainWindow):
             btn.setChecked(mode == tool_mode)
         self.canvas.set_tool(tool_mode)
 
+    def _update_size_controls_style(self):
+        """Refresh brush/text box borders & icons to match current pen color."""
+        c = self.canvas.pen_color
+        cname = c.name()
+        # Brush box border = pen color
+        self.brush_box.setStyleSheet(f"""
+            QFrame#sizeBoxBrush {{
+                background-color: rgba({c.red()}, {c.green()}, {c.blue()}, 25);
+                border: 2px solid {cname};
+                border-radius: 8px;
+            }}
+            QFrame#sizeBoxBrush:hover {{
+                background-color: rgba({c.red()}, {c.green()}, {c.blue()}, 50);
+                border: 2px solid {cname};
+            }}
+        """)
+        self.size_spin.setStyleSheet(f"""
+            QSpinBox {{
+                background-color: rgba(0, 0, 0, 0.45);
+                border: 1px solid {cname};
+                border-radius: 4px;
+                color: {cname};
+                font-size: 14px;
+                font-weight: bold;
+                padding: 2px 4px;
+            }}
+            QSpinBox:hover {{ border: 1px solid {cname}; }}
+            QSpinBox:focus {{ border: 1px solid {cname}; }}
+        """)
+        # Text box border = pen color
+        self.text_box.setStyleSheet(f"""
+            QFrame#sizeBoxText {{
+                background-color: rgba({c.red()}, {c.green()}, {c.blue()}, 25);
+                border: 2px solid {cname};
+                border-radius: 8px;
+            }}
+            QFrame#sizeBoxText:hover {{
+                background-color: rgba({c.red()}, {c.green()}, {c.blue()}, 50);
+                border: 2px solid {cname};
+            }}
+        """)
+        self.text_spin.setStyleSheet(f"""
+            QSpinBox {{
+                background-color: rgba(0, 0, 0, 0.45);
+                border: 1px solid {cname};
+                border-radius: 4px;
+                color: {cname};
+                font-size: 14px;
+                font-weight: bold;
+                padding: 2px 4px;
+            }}
+            QSpinBox:hover {{ border: 1px solid {cname}; }}
+            QSpinBox:focus {{ border: 1px solid {cname}; }}
+        """)
+
     def choose_color(self):
         color = QColorDialog.getColor(self.canvas.pen_color, self, "Select Color")
         if color.isValid():
@@ -437,6 +428,7 @@ class MainWindow(QMainWindow):
                 color.red(), color.green(), color.blue(), 100
             )
             self._update_color_swatch(color)
+            self._update_size_controls_style()
 
     def change_pen_size(self, size):
         self.canvas.pen_width = size
@@ -446,7 +438,10 @@ class MainWindow(QMainWindow):
     def change_text_size(self, size):
         self.canvas.text_size = size
 
-    def toggle_handwriting(self, checked):
+    def toggle_handwriting(self, checked=None):
+        if checked is None:
+            checked = not self.canvas.handwriting_enabled
+            self.hw_btn.setChecked(checked)
         self.canvas.handwriting_enabled = checked
         if checked:
             self.hw_btn.setStyleSheet(
@@ -560,7 +555,7 @@ class MainWindow(QMainWindow):
         if theme_name == "Light Glass":
             self.canvas.canvas_bg_color = QColor("#f5f5fa")
             self.canvas.grid_color = QColor("#dddde5")
-            self.canvas.pen_color = QColor("#0066cc")
+            self.canvas.pen_color = QColor("#1e3a8a")
         elif theme_name == "Slate":
             self.canvas.canvas_bg_color = QColor("#0f172a")
             self.canvas.grid_color = QColor("#1e293b")
@@ -572,7 +567,9 @@ class MainWindow(QMainWindow):
 
         self.canvas.update_background()
         self.canvas.viewport().update()
+        self.canvas.refresh_all_text_colors()
         self._update_color_swatch(self.canvas.pen_color)
+        self._update_size_controls_style()
 
     # ==================================================================
     # Shortcuts
@@ -593,6 +590,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+T"), self, self.cycle_theme)
         QShortcut(QKeySequence("F11"), self, self.toggle_fullscreen)
         QShortcut(QKeySequence("Ctrl+E"), self, self.export_to_pdf)
+        QShortcut(QKeySequence("Ctrl+H"), self, lambda: self.toggle_handwriting())
 
     def cycle_theme(self):
         themes = ["Dark Glass", "Light Glass", "Slate"]

@@ -8,6 +8,8 @@ from PySide6.QtGui import (
     QPainter, QPen, QBrush, QColor, QPainterPath, QFont, QCursor
 )
 from PySide6.QtCore import Qt, QPointF, QTimer, Signal, QRectF, QPoint
+from PySide6.QtGui import QPixmap
+import re
 
 import config
 from core.handwriting import HandwritingWorker
@@ -128,7 +130,7 @@ class WhiteboardCanvas(QGraphicsView):
         self.text_size = 16
         self.highlighter_color = QColor(255, 255, 0, 100)
         self.highlighter_width = 15
-        self.eraser_width = 20
+        self.eraser_width = 24
 
         # Interaction states
         self.is_drawing = False
@@ -147,6 +149,10 @@ class WhiteboardCanvas(QGraphicsView):
         # pressed (useful for live cursor feedback).
         self.setMouseTracking(True)
 
+        # Cache the background (grid) so it doesn't flicker/deflect when
+        # items are added or moved on the canvas.
+        self.setCacheMode(QGraphicsView.CacheBackground)
+
         # Undo/Redo stacks
         self.undo_stack = []
         self.redo_stack = []
@@ -155,6 +161,10 @@ class WhiteboardCanvas(QGraphicsView):
         self.handwriting_enabled = False
         self.current_handwriting_strokes = []
         self.current_handwriting_items = []
+        self._hw_last_pos = None          # last placed handwriting text position
+        self._hw_line_y = None            # y-coordinate of the current text line
+        self._HW_LINE_SPACING = 40        # scene units – vertical threshold for new line
+        self._HW_WORD_GAP = 12            # scene units – horizontal gap between words
         self.handwriting_timer = QTimer(self)
         self.handwriting_timer.setSingleShot(True)
         self.handwriting_timer.setInterval(config.HANDWRITING_RECOGNITION_DELAY)
@@ -163,6 +173,9 @@ class WhiteboardCanvas(QGraphicsView):
         # Canvas styling
         self.canvas_bg_color = QColor("#0d0d11")
         self.grid_color = QColor("#1a1a22")
+
+        # Eraser cursor cache
+        self._eraser_cursor = self._make_eraser_cursor()
 
         # Setup initial scene
         self.setScene(QGraphicsScene(self))
@@ -204,9 +217,28 @@ class WhiteboardCanvas(QGraphicsView):
         # Use NoDrag in *all* modes – RubberBandDrag would prevent the
         # user from clicking on a text item to select & move it.
         self.setDragMode(QGraphicsView.NoDrag)
-        self.setCursor(Qt.ArrowCursor if is_select else Qt.CrossCursor)
+        if tool_mode == config.MODE_ERASER:
+            self.setCursor(self._eraser_cursor)
+        else:
+            self.setCursor(Qt.ArrowCursor if is_select else Qt.CrossCursor)
         # Text items are only movable while the Select tool is active.
         self._set_text_items_movable(is_select)
+
+    def _make_eraser_cursor(self):
+        """Create a circular cursor showing the eraser area."""
+        size = int(self.eraser_width * 1.2)
+        px = QPixmap(size, size)
+        px.fill(QColor(0, 0, 0, 0))
+        p = QPainter(px)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(QColor(255, 80, 80, 200), 2.5))
+        p.setBrush(QColor(255, 80, 80, 40))
+        p.drawEllipse(1, 1, size - 3, size - 3)
+        p.setPen(QPen(QColor(255, 255, 255, 120), 1))
+        p.drawLine(size // 2, 4, size // 2, size - 4)
+        p.drawLine(4, size // 2, size - 4, size // 2)
+        p.end()
+        return QCursor(px)
 
     def _set_text_items_movable(self, movable):
         """Enable or disable movement on every text item in the current scene."""
@@ -708,6 +740,27 @@ class WhiteboardCanvas(QGraphicsView):
     # ------------------------------------------------------------------
     DATA_KEY_ROLE = Qt.UserRole + 1   # distinguishes "topic" vs "subtopic"
 
+    def _get_topic_text_color(self):
+        """Return a topic text color that contrasts with the current canvas bg."""
+        return QColor("#ffffff") if self.canvas_bg_color.lightness() < 128 else QColor("#1e1e2e")
+
+    def _get_subtopic_text_color(self):
+        """Return a subtopic text color that contrasts with the current canvas bg."""
+        return QColor("#c4b5fd") if self.canvas_bg_color.lightness() < 128 else QColor("#5b21b6")
+
+    def refresh_all_text_colors(self):
+        """Update every text item's colour to match the current theme."""
+        for item in self.scene().items():
+            if not isinstance(item, QGraphicsTextItem):
+                continue
+            role = item.data(self.DATA_KEY_ROLE)
+            if role == "topic":
+                item.setDefaultTextColor(self._get_topic_text_color())
+            elif role == "subtopic":
+                item.setDefaultTextColor(self._get_subtopic_text_color())
+            else:
+                item.setDefaultTextColor(self.pen_color)
+
     def _find_topic_item(self):
         """Return the single topic QGraphicsTextItem in the scene, or None."""
         for item in self.scene().items():
@@ -751,7 +804,7 @@ class WhiteboardCanvas(QGraphicsView):
         # and is edited only via double-click (no auto-edit-on-click).
         item = MovableTextItem(text.strip())
         item.setData(self.DATA_KEY_ROLE, "topic")
-        item.setDefaultTextColor(QColor("#ffffff"))
+        item.setDefaultTextColor(self._get_topic_text_color())
         item.setFont(QFont("Segoe UI", 22, QFont.Bold))
         item.setZValue(10)  # keep topic on top of drawings
         # ItemIsMovable is set after addItem so it reflects the active tool.
@@ -788,7 +841,7 @@ class WhiteboardCanvas(QGraphicsView):
 
         item = MovableTextItem(text.strip())
         item.setData(self.DATA_KEY_ROLE, "subtopic")
-        item.setDefaultTextColor(QColor("#c4b5fd"))
+        item.setDefaultTextColor(self._get_subtopic_text_color())
         item.setFont(QFont("Segoe UI", 16))
         item.setZValue(10)
 
@@ -861,6 +914,10 @@ class WhiteboardCanvas(QGraphicsView):
         if not text or not text.strip():
             return
 
+        # ── Non-text filter: skip if the result contains no letters ────
+        if not re.search(r'[a-zA-Z0-9]', text):
+            return
+
         # Remove the drawn strokes
         for item in items:
             if item in self.scene().items():
@@ -869,20 +926,41 @@ class WhiteboardCanvas(QGraphicsView):
                     if it == item:
                         self.undo_stack.remove((act, it))
 
-        scene_pos = self.mapToScene(QPoint(int(vp_x), int(vp_y)))
+        stroke_pos = self.mapToScene(QPoint(int(vp_x), int(vp_y)))
+
+        # ── Auto-flow: place the word relative to the previous one ────
+        if self._hw_last_pos is not None:
+            dy = abs(stroke_pos.y() - self._hw_line_y)
+            if dy > self._HW_LINE_SPACING:
+                # Significant vertical shift → new line at stroke origin
+                scene_pos = QPointF(stroke_pos.x(), stroke_pos.y())
+                self._hw_line_y = stroke_pos.y()
+            else:
+                # Same line → place to the right with a gap
+                scene_pos = QPointF(
+                    self._hw_last_pos.x() + self._HW_WORD_GAP,
+                    self._hw_line_y,
+                )
+        else:
+            scene_pos = stroke_pos
+            self._hw_line_y = stroke_pos.y()
 
         text_item = MovableTextItem(text)
         text_item.setDefaultTextColor(self.pen_color)
         text_item.setFont(QFont("Segoe UI", self.text_size, QFont.Bold))
         text_item.setPos(scene_pos)
         self.scene().addItem(text_item)
-        # Set movability after the item is in the scene, based on the
-        # currently active tool.
         text_item.setFlag(
             QGraphicsItem.ItemIsMovable,
             self.current_tool == config.MODE_SELECT,
         )
         self.undo_stack.append(("add", text_item))
+
+        # Remember where we placed it for the next word
+        self._hw_last_pos = QPointF(
+            scene_pos.x() + text_item.boundingRect().width(),
+            scene_pos.y(),
+        )
 
     # ------------------------------------------------------------------
     # Undo / Redo
