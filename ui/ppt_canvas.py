@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QGraphicsScene, QGraphicsPathItem, QGraphicsRectItem, QGraphicsEllipseItem,
     QGraphicsLineItem, QGraphicsTextItem, QInputDialog, QFileDialog,
     QMessageBox, QFrame, QGraphicsItem, QGraphicsProxyWidget, QSizePolicy,
-    QApplication
+    QApplication, QCheckBox
 )
 from PySide6.QtGui import (
     QPainter, QPen, QBrush, QColor, QPainterPath, QFont, QCursor, QPixmap, QFontInfo
@@ -151,6 +151,20 @@ class PptCanvasView(QGraphicsView):
 
     def set_slide_background(self, pixmap):
         self._scene.clear()
+        self.slide_pixmap = pixmap
+        if pixmap:
+            self.slide_bg_item = self._scene.addPixmap(pixmap)
+            self.slide_bg_item.setZValue(-1)
+            self._scene.setSceneRect(0, 0, pixmap.width(), pixmap.height())
+            self.fitInView(0, 0, pixmap.width(), pixmap.height(), Qt.KeepAspectRatio)
+        else:
+            self._scene.setSceneRect(0, 0, 800, 600)
+
+    def update_background_only(self, pixmap):
+        """Replaces only the slide background, preserving annotation items."""
+        if self.slide_bg_item is not None:
+            self._scene.removeItem(self.slide_bg_item)
+            self.slide_bg_item = None
         self.slide_pixmap = pixmap
         if pixmap:
             self.slide_bg_item = self._scene.addPixmap(pixmap)
@@ -490,6 +504,32 @@ class PptCanvasWidget(QWidget):
         self.download_btn.setEnabled(False)
         tb_layout.addWidget(self.download_btn)
 
+        self.persist_cb = QCheckBox("Persistent Annotations")
+        self.persist_cb.setStyleSheet("""
+            QCheckBox {
+                color: #c4c4d8;
+                font-size: 13px;
+                font-weight: 500;
+                spacing: 6px;
+            }
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+                border: 2px solid rgba(99, 102, 241, 0.5);
+                border-radius: 3px;
+                background: rgba(10, 10, 18, 0.6);
+            }
+            QCheckBox::indicator:checked {
+                background: rgba(99, 102, 241, 0.8);
+                border: 2px solid rgba(99, 102, 241, 0.9);
+            }
+            QCheckBox::indicator:hover {
+                border: 2px solid rgba(99, 102, 241, 0.8);
+            }
+        """)
+        self.persist_cb.setChecked(False)
+        tb_layout.addWidget(self.persist_cb)
+
         tb_layout.addStretch()
 
         self.file_label = QLabel("No presentation loaded")
@@ -601,6 +641,9 @@ class PptCanvasWidget(QWidget):
         if self._current_file_path is None:
             return
         items = self.slide_view.get_annotation_items()
+        # Remove items from scene so QGraphicsScene.clear() won't delete them
+        for item in items:
+            self.slide_view.scene().removeItem(item)
         self.slide_annotations[self.current_slide_index] = {
             "items": items,
             "undo": list(self.slide_view.undo_stack),
@@ -619,7 +662,13 @@ class PptCanvasWidget(QWidget):
 
     def _show_slide(self, index):
         pixmap = self.ppt_handler.get_slide_pixmap(index)
-        self.slide_view.set_slide_background(pixmap)
+        if self.persist_cb.isChecked():
+            # Persistent ON: restore per-slide annotations
+            self.slide_view.set_slide_background(pixmap)
+            self._load_annotations(index)
+        else:
+            # Persistent OFF: annotations are temporary, cleared on navigation
+            self.slide_view.set_slide_background(pixmap)
         self.slide_counter.setText(f"Slide {index + 1} / {self.ppt_handler.slide_count}")
         self.slide_spin.blockSignals(True)
         self.slide_spin.setValue(index + 1)
@@ -634,17 +683,17 @@ class PptCanvasWidget(QWidget):
         self.next_btn.setEnabled(cur < total - 1)
 
     def next_slide(self):
-        self._save_current_annotations()
+        if self.persist_cb.isChecked():
+            self._save_current_annotations()
         if self.current_slide_index < self.ppt_handler.slide_count - 1:
             self.current_slide_index += 1
-            self._load_annotations(self.current_slide_index)
             self._show_slide(self.current_slide_index)
 
     def prev_slide(self):
-        self._save_current_annotations()
+        if self.persist_cb.isChecked():
+            self._save_current_annotations()
         if self.current_slide_index > 0:
             self.current_slide_index -= 1
-            self._load_annotations(self.current_slide_index)
             self._show_slide(self.current_slide_index)
 
     def go_to_slide(self, slide_num):
@@ -652,10 +701,15 @@ class PptCanvasWidget(QWidget):
         if target == self.current_slide_index:
             return
         if 0 <= target < self.ppt_handler.slide_count:
-            self._save_current_annotations()
+            if self.persist_cb.isChecked():
+                self._save_current_annotations()
             self.current_slide_index = target
-            self._load_annotations(target)
             self._show_slide(target)
+
+    def _re_add_current_annotations(self):
+        if self.current_slide_index in self.slide_annotations:
+            for item in self.slide_annotations[self.current_slide_index]["items"]:
+                self.slide_view.scene().addItem(item)
 
     def download_annotated(self):
         self._save_current_annotations()
@@ -665,6 +719,7 @@ class PptCanvasWidget(QWidget):
             "PowerPoint Files (*.pptx)"
         )
         if not output_path:
+            self._re_add_current_annotations()
             return
 
         try:
@@ -678,6 +733,7 @@ class PptCanvasWidget(QWidget):
                     annotation_map[idx] = scene
 
             success = self.ppt_handler.export_annotated_pptx(output_path, annotation_map)
+            self._re_add_current_annotations()
             if success:
                 QMessageBox.information(
                     self, "Export Complete",
@@ -686,6 +742,7 @@ class PptCanvasWidget(QWidget):
             else:
                 QMessageBox.critical(self, "Export Error", "Failed to save annotated presentation.")
         except Exception as e:
+            self._re_add_current_annotations()
             QMessageBox.critical(self, "Export Error", f"An error occurred:\n{str(e)}")
 
     def set_tool(self, tool_mode):

@@ -1,11 +1,13 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QComboBox,
-    QPlainTextEdit, QTextEdit, QLineEdit, QSplitter, QLabel, QFrame
+    QPlainTextEdit, QTextEdit, QLineEdit, QSplitter, QLabel, QFrame,
+    QCheckBox, QStackedWidget
 )
 from PySide6.QtGui import QFont, QColor
 from PySide6.QtCore import Qt, Signal, QUrl
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from core.compiler import CodeCompiler
+from ui.ppt_canvas import PptCanvasView
 
 from PySide6.QtCore import QThread
 
@@ -582,6 +584,181 @@ class BrowserWidget(QWidget):
     def set_url(self, url: str) -> None:
         self._url_bar.setText(url)
         self._web.setUrl(QUrl(url))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  4. HtmlCanvasWidget  (HTML with annotation overlay)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class HtmlCanvasWidget(QWidget):
+    """HTML renderer with a transparent annotation overlay and persistent toggle."""
+
+    html_changed = Signal(str)
+
+    def __init__(self, initial_html: str = "", parent: QWidget | None = None):
+        super().__init__(parent)
+        self.persistent = False
+        self._build_ui(initial_html)
+
+    def _build_ui(self, initial_html: str) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # Toolbar with persistent checkbox
+        toolbar = QFrame(self)
+        toolbar.setObjectName("htmlAnnotToolbar")
+        toolbar.setStyleSheet(
+            f"QFrame {{ {_DARK_GLASS_BG} border-bottom: 1px solid rgba(99,102,241,0.15); }}"
+        )
+        tb_layout = QHBoxLayout(toolbar)
+        tb_layout.setContentsMargins(14, 8, 14, 8)
+        tb_layout.setSpacing(10)
+
+        self._persist_cb = QCheckBox("Persistent Annotations")
+        self._persist_cb.setStyleSheet("""
+            QCheckBox {
+                color: #c4c4d8;
+                font-size: 13px;
+                font-weight: 500;
+                spacing: 6px;
+            }
+            QCheckBox::indicator {
+                width: 16px; height: 16px;
+                border: 2px solid rgba(99, 102, 241, 0.5);
+                border-radius: 3px;
+                background: rgba(10, 10, 18, 0.6);
+            }
+            QCheckBox::indicator:checked {
+                background: rgba(99, 102, 241, 0.8);
+                border: 2px solid rgba(99, 102, 241, 0.9);
+            }
+            QCheckBox::indicator:hover {
+                border: 2px solid rgba(99, 102, 241, 0.8);
+            }
+        """)
+        tb_layout.addWidget(self._persist_cb)
+
+        tb_layout.addStretch()
+
+        self._edit_toggle_btn = QPushButton("✏️ Edit HTML")
+        self._edit_toggle_btn.setStyleSheet(_SUBTLE_BTN)
+        self._edit_toggle_btn.setCursor(Qt.PointingHandCursor)
+        self._edit_toggle_btn.clicked.connect(self._toggle_editor)
+        tb_layout.addWidget(self._edit_toggle_btn)
+
+        root.addWidget(toolbar)
+
+        # Content area: web view with annotation overlay
+        self._content_frame = QFrame(self)
+        content_layout = QVBoxLayout(self._content_frame)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+
+        self._web = QWebEngineView(self._content_frame)
+        self._web.setHtml(initial_html or _placeholder_html("HTML Canvas"))
+        content_layout.addWidget(self._web)
+
+        # Annotation overlay on top of web view (child of content frame, positioned manually)
+        self._annot_overlay = PptCanvasView(self._content_frame)
+        self._annot_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._annot_overlay.setBackgroundBrush(QColor(0, 0, 0, 0))
+        self._annot_overlay.setStyleSheet("background: transparent; border: none;")
+        self._annot_overlay.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._annot_overlay.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._annot_overlay.setVisible(True)
+
+        root.addWidget(self._content_frame, 1)
+
+        # Editor panel (hidden by default)
+        self._editor_panel = QFrame(self)
+        self._editor_panel.setStyleSheet(
+            f"QFrame {{ {_DARK_GLASS_BG} border-top: 1px solid rgba(99,102,241,0.18); }}"
+        )
+        ep_layout = QVBoxLayout(self._editor_panel)
+        ep_layout.setContentsMargins(14, 14, 14, 14)
+        ep_layout.setSpacing(10)
+
+        header = QLabel("✦ HTML Editor")
+        header.setStyleSheet("color: #c7d2fe; font-size: 15px; font-weight: 700; padding: 2px 0;")
+        ep_layout.addWidget(header)
+
+        self._editor = QPlainTextEdit()
+        self._editor.setFont(QFont("Consolas", 12))
+        self._editor.setStyleSheet(_EDITOR_STYLE)
+        self._editor.setPlainText(initial_html)
+        self._editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        ep_layout.addWidget(self._editor, 1)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        render_btn = QPushButton("▶  Render HTML")
+        render_btn.setStyleSheet(_ACCENT_BTN)
+        render_btn.setCursor(Qt.PointingHandCursor)
+        render_btn.clicked.connect(self._apply_html)
+        btn_row.addWidget(render_btn)
+        btn_row.addStretch()
+        ep_layout.addLayout(btn_row)
+
+        self._editor_panel.setVisible(False)
+        root.addWidget(self._editor_panel)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._annot_overlay.setGeometry(self._web.geometry())
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._annot_overlay.setGeometry(self._web.geometry())
+
+    def _toggle_editor(self):
+        visible = not self._editor_panel.isVisible()
+        self._editor_panel.setVisible(visible)
+
+    def _apply_html(self):
+        html = self._editor.toPlainText()
+        self._web.setHtml(html)
+        self.html_changed.emit(html)
+
+    def set_html(self, html_code: str) -> None:
+        self._editor.setPlainText(html_code)
+        if not self._persist_cb.isChecked():
+            self._annot_overlay.clear_annotations()
+        self._web.setHtml(html_code)
+
+    def set_tool(self, tool_mode):
+        from PySide6.QtCore import QRect
+        is_drawing = tool_mode != 0  # MODE_SELECT = 0
+        self._annot_overlay.set_tool(tool_mode)
+        self._annot_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, not is_drawing)
+        if is_drawing:
+            self._annot_overlay.raise_()
+            self._annot_overlay.setGeometry(self._web.geometry())
+        else:
+            self._annot_overlay.lower()
+
+    def set_pen_color(self, color):
+        self._annot_overlay.pen_color = color
+        self._annot_overlay.highlighter_color = QColor(
+            color.red(), color.green(), color.blue(), 100
+        )
+
+    def set_pen_width(self, width):
+        self._annot_overlay.pen_width = width
+        self._annot_overlay.highlighter_width = max(width * 4, 8)
+        self._annot_overlay.eraser_width = max(width * 5, 10)
+
+    def set_text_size(self, size):
+        self._annot_overlay.text_size = size
+
+    def undo(self):
+        self._annot_overlay.undo()
+
+    def redo(self):
+        self._annot_overlay.redo()
+
+    def is_persistent(self):
+        return self._persist_cb.isChecked()
 
 
 # ═══════════════════════════════════════════════════════════════════════════

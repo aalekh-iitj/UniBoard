@@ -20,8 +20,9 @@ import config
 from core.page_manager import PageManager
 from ui.canvas import WhiteboardCanvas
 from ui.sidebar import SidebarWidget
-from ui.embedded_widgets import HTMLRenderWidget, CompilerWidget, BrowserWidget
+from ui.embedded_widgets import CompilerWidget, BrowserWidget, HtmlCanvasWidget
 from ui.ppt_canvas import PptCanvasWidget
+from ui.pdf_canvas import PdfCanvasWidget
 from ui.styles import Themes
 from utils.pdf_export import export_images_to_pdf
 
@@ -95,6 +96,7 @@ class MainWindow(QMainWindow):
         self.embedded_compiler = None
         self.embedded_browser = None
         self.embedded_ppt = None
+        self.embedded_pdf = None
         self.current_embedded_index = None
 
         # ---- Docks & Toolbar ----
@@ -323,7 +325,7 @@ class MainWindow(QMainWindow):
 
         # ── Canvas mode combo ──────────────────────────────────────────
         self.canvas_type_combo = QComboBox()
-        self.canvas_type_combo.addItems(["Canvas", "HTML", "Compiler", "Browser", "Presentation"])
+        self.canvas_type_combo.addItems(["Canvas", "HTML", "Compiler", "Browser", "Presentation", "PDF"])
         self.canvas_type_combo.setFixedWidth(145)
         self.canvas_type_combo.setToolTip("Canvas Type")
         self.canvas_type_combo.currentTextChanged.connect(self.on_canvas_type_changed)
@@ -365,11 +367,8 @@ class MainWindow(QMainWindow):
     def set_canvas_tool(self, tool_mode):
         for mode, btn in self.tool_actions.items():
             btn.setChecked(mode == tool_mode)
-        ppt = getattr(self, 'embedded_ppt', None)
-        if ppt is not None and self.stack.currentWidget() is ppt:
-            ppt.set_tool(tool_mode)
-        else:
-            self.canvas.set_tool(tool_mode)
+        target = self._get_active_target()
+        target.set_tool(tool_mode)
 
     def _update_size_controls_style(self):
         """Refresh brush/text box borders & icons to match current pen color."""
@@ -427,8 +426,7 @@ class MainWindow(QMainWindow):
         """)
 
     def choose_color(self):
-        ppt = getattr(self, 'embedded_ppt', None)
-        target = ppt if (ppt is not None and self.stack.currentWidget() is ppt) else self.canvas
+        target = self._get_active_target()
         color = QColorDialog.getColor(target.pen_color, self, "Select Color")
         if color.isValid():
             target.pen_color = color
@@ -439,9 +437,18 @@ class MainWindow(QMainWindow):
             self._update_color_swatch(color)
             self._update_size_controls_style()
 
+    def _get_active_target(self):
+        current = self.stack.currentWidget()
+        if current is self.canvas:
+            return self.canvas
+        for attr in ("embedded_html", "embedded_ppt", "embedded_pdf"):
+            widget = getattr(self, attr, None)
+            if widget is not None and current is widget:
+                return widget
+        return self.canvas
+
     def change_pen_size(self, size):
-        ppt = getattr(self, 'embedded_ppt', None)
-        target = ppt if (ppt is not None and self.stack.currentWidget() is ppt) else self.canvas
+        target = self._get_active_target()
         target.pen_width = size
         if hasattr(target, 'highlighter_width'):
             target.highlighter_width = max(size * 4, 8)
@@ -449,8 +456,7 @@ class MainWindow(QMainWindow):
             target.eraser_width = max(size * 5, 10)
 
     def change_text_size(self, size):
-        ppt = getattr(self, 'embedded_ppt', None)
-        target = ppt if (ppt is not None and self.stack.currentWidget() is ppt) else self.canvas
+        target = self._get_active_target()
         target.text_size = size
 
     def toggle_handwriting(self, checked=None):
@@ -493,6 +499,7 @@ class MainWindow(QMainWindow):
             "Compiler":     config.CANVAS_COMPILER,
             "Browser":      config.CANVAS_BROWSER,
             "Presentation": config.CANVAS_PPT,
+            "PDF":          config.CANVAS_PDF,
         }
         mode = type_map.get(type_text, config.CANVAS_PLAIN)
 
@@ -521,7 +528,7 @@ class MainWindow(QMainWindow):
         self._cleanup_embedded()
 
         if mode == config.CANVAS_HTML:
-            self.embedded_html = HTMLRenderWidget(page.meta.get("html_code", ""))
+            self.embedded_html = HtmlCanvasWidget(page.meta.get("html_code", ""))
             self.embedded_html.html_changed.connect(
                 lambda html: page.meta.update({"html_code": html})
             )
@@ -559,8 +566,16 @@ class MainWindow(QMainWindow):
             self.stack.addWidget(self.embedded_ppt)
             self.stack.setCurrentWidget(self.embedded_ppt)
 
+        elif mode == config.CANVAS_PDF:
+            pdf_path = page.meta.get("pdf_path", "")
+            self.embedded_pdf = PdfCanvasWidget()
+            if pdf_path and os.path.exists(pdf_path):
+                self.embedded_pdf._load_pdf(pdf_path)
+            self.stack.addWidget(self.embedded_pdf)
+            self.stack.setCurrentWidget(self.embedded_pdf)
+
     def _cleanup_embedded(self):
-        for attr in ("embedded_html", "embedded_compiler", "embedded_browser", "embedded_ppt"):
+        for attr in ("embedded_html", "embedded_compiler", "embedded_browser", "embedded_ppt", "embedded_pdf"):
             widget = getattr(self, attr, None)
             if widget:
                 idx = self.stack.indexOf(widget)
@@ -626,18 +641,10 @@ class MainWindow(QMainWindow):
         self.theme_combo.setCurrentText(nxt)
 
     def _undo_active(self):
-        ppt = getattr(self, 'embedded_ppt', None)
-        if ppt is not None and self.stack.currentWidget() is ppt:
-            ppt.undo()
-        else:
-            self.canvas.undo()
+        self._get_active_target().undo()
 
     def _redo_active(self):
-        ppt = getattr(self, 'embedded_ppt', None)
-        if ppt is not None and self.stack.currentWidget() is ppt:
-            ppt.redo()
-        else:
-            self.canvas.redo()
+        self._get_active_target().redo()
 
     # ==================================================================
     # PDF Export
@@ -732,6 +739,7 @@ class MainWindow(QMainWindow):
             config.CANVAS_COMPILER: "Compiler",
             config.CANVAS_BROWSER:  "Browser",
             config.CANVAS_PPT:      "Presentation",
+            config.CANVAS_PDF:      "PDF",
         }
 
         self.canvas_type_combo.blockSignals(True)

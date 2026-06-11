@@ -19,7 +19,8 @@ class PageNode:
             "live_url": "https://www.google.com",
             "compiled_code": "# Write python code here\nprint('Hello UniBoard compiler!')\n",
             "compiler_lang": "Python",
-            "ppt_path": ""
+            "ppt_path": "",
+            "pdf_path": ""
         }
 
     def add_child(self, child_node):
