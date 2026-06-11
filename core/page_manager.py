@@ -14,11 +14,12 @@ class PageNode:
         
         # Store metadata for other engines (like HTML views or compilers state)
         self.meta = {
-            "canvas_type": "plain",  # "plain" | "html" | "compiler" | "browser"
+            "canvas_type": "plain",  # "plain" | "html" | "compiler" | "browser" | "presentation"
             "html_code": "<!-- Paste HTML here -->\n<div style='background: linear-gradient(135deg, #8a2be2, #4a00e0); color: white; padding: 40px; border-radius: 12px; font-family: sans-serif; text-align: center;'>\n  <h2>UniBoard HTML Presentation</h2>\n  <p>Render presentation pages and annotate on top of them.</p>\n</div>",
             "live_url": "https://www.google.com",
             "compiled_code": "# Write python code here\nprint('Hello UniBoard compiler!')\n",
-            "compiler_lang": "Python"
+            "compiler_lang": "Python",
+            "ppt_path": ""
         }
 
     def add_child(self, child_node):

@@ -35,6 +35,7 @@ CANVAS_PLAIN = "plain"
 CANVAS_HTML = "html"
 CANVAS_COMPILER = "compiler"
 CANVAS_BROWSER = "browser"
+CANVAS_PPT = "presentation"
 
 # Handwriting Recognition Configuration
 HANDWRITING_RECOGNITION_DELAY = 900

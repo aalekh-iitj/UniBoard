@@ -21,6 +21,7 @@ from core.page_manager import PageManager
 from ui.canvas import WhiteboardCanvas
 from ui.sidebar import SidebarWidget
 from ui.embedded_widgets import HTMLRenderWidget, CompilerWidget, BrowserWidget
+from ui.ppt_canvas import PptCanvasWidget
 from ui.styles import Themes
 from utils.pdf_export import export_images_to_pdf
 
@@ -93,6 +94,7 @@ class MainWindow(QMainWindow):
         self.embedded_html = None
         self.embedded_compiler = None
         self.embedded_browser = None
+        self.embedded_ppt = None
         self.current_embedded_index = None
 
         # ---- Docks & Toolbar ----
@@ -289,14 +291,14 @@ class MainWindow(QMainWindow):
         undo_btn.setIcon(_make_icon("↩", 28, "#d1d1d6"))
         undo_btn.setToolTip("Undo  (Ctrl+Z)")
         undo_btn.setFixedSize(36, 32)
-        undo_btn.clicked.connect(self.canvas.undo)
+        undo_btn.clicked.connect(self._undo_active)
         tb.addWidget(undo_btn)
 
         redo_btn = QToolButton()
         redo_btn.setIcon(_make_icon("↪", 28, "#d1d1d6"))
         redo_btn.setToolTip("Redo  (Ctrl+Y)")
         redo_btn.setFixedSize(36, 32)
-        redo_btn.clicked.connect(self.canvas.redo)
+        redo_btn.clicked.connect(self._redo_active)
         tb.addWidget(redo_btn)
 
         tb.addSeparator()
@@ -321,8 +323,8 @@ class MainWindow(QMainWindow):
 
         # ── Canvas mode combo ──────────────────────────────────────────
         self.canvas_type_combo = QComboBox()
-        self.canvas_type_combo.addItems(["Canvas", "HTML", "Compiler", "Browser"])
-        self.canvas_type_combo.setFixedWidth(130)
+        self.canvas_type_combo.addItems(["Canvas", "HTML", "Compiler", "Browser", "Presentation"])
+        self.canvas_type_combo.setFixedWidth(145)
         self.canvas_type_combo.setToolTip("Canvas Type")
         self.canvas_type_combo.currentTextChanged.connect(self.on_canvas_type_changed)
         tb.addWidget(self.canvas_type_combo)
@@ -363,7 +365,11 @@ class MainWindow(QMainWindow):
     def set_canvas_tool(self, tool_mode):
         for mode, btn in self.tool_actions.items():
             btn.setChecked(mode == tool_mode)
-        self.canvas.set_tool(tool_mode)
+        ppt = getattr(self, 'embedded_ppt', None)
+        if ppt is not None and self.stack.currentWidget() is ppt:
+            ppt.set_tool(tool_mode)
+        else:
+            self.canvas.set_tool(tool_mode)
 
     def _update_size_controls_style(self):
         """Refresh brush/text box borders & icons to match current pen color."""
@@ -421,22 +427,31 @@ class MainWindow(QMainWindow):
         """)
 
     def choose_color(self):
-        color = QColorDialog.getColor(self.canvas.pen_color, self, "Select Color")
+        ppt = getattr(self, 'embedded_ppt', None)
+        target = ppt if (ppt is not None and self.stack.currentWidget() is ppt) else self.canvas
+        color = QColorDialog.getColor(target.pen_color, self, "Select Color")
         if color.isValid():
-            self.canvas.pen_color = color
-            self.canvas.highlighter_color = QColor(
-                color.red(), color.green(), color.blue(), 100
-            )
+            target.pen_color = color
+            if hasattr(target, 'highlighter_color'):
+                target.highlighter_color = QColor(
+                    color.red(), color.green(), color.blue(), 100
+                )
             self._update_color_swatch(color)
             self._update_size_controls_style()
 
     def change_pen_size(self, size):
-        self.canvas.pen_width = size
-        self.canvas.highlighter_width = max(size * 4, 8)
-        self.canvas.eraser_width = max(size * 5, 10)
+        ppt = getattr(self, 'embedded_ppt', None)
+        target = ppt if (ppt is not None and self.stack.currentWidget() is ppt) else self.canvas
+        target.pen_width = size
+        if hasattr(target, 'highlighter_width'):
+            target.highlighter_width = max(size * 4, 8)
+        if hasattr(target, 'eraser_width'):
+            target.eraser_width = max(size * 5, 10)
 
     def change_text_size(self, size):
-        self.canvas.text_size = size
+        ppt = getattr(self, 'embedded_ppt', None)
+        target = ppt if (ppt is not None and self.stack.currentWidget() is ppt) else self.canvas
+        target.text_size = size
 
     def toggle_handwriting(self, checked=None):
         if checked is None:
@@ -473,10 +488,11 @@ class MainWindow(QMainWindow):
     # ==================================================================
     def on_canvas_type_changed(self, type_text):
         type_map = {
-            "Canvas":   config.CANVAS_PLAIN,
-            "HTML":     config.CANVAS_HTML,
-            "Compiler": config.CANVAS_COMPILER,
-            "Browser":  config.CANVAS_BROWSER,
+            "Canvas":       config.CANVAS_PLAIN,
+            "HTML":         config.CANVAS_HTML,
+            "Compiler":     config.CANVAS_COMPILER,
+            "Browser":      config.CANVAS_BROWSER,
+            "Presentation": config.CANVAS_PPT,
         }
         mode = type_map.get(type_text, config.CANVAS_PLAIN)
 
@@ -535,8 +551,16 @@ class MainWindow(QMainWindow):
             self.stack.addWidget(self.embedded_browser)
             self.stack.setCurrentWidget(self.embedded_browser)
 
+        elif mode == config.CANVAS_PPT:
+            ppt_path = page.meta.get("ppt_path", "")
+            self.embedded_ppt = PptCanvasWidget()
+            if ppt_path and os.path.exists(ppt_path):
+                self.embedded_ppt._load_ppt(ppt_path)
+            self.stack.addWidget(self.embedded_ppt)
+            self.stack.setCurrentWidget(self.embedded_ppt)
+
     def _cleanup_embedded(self):
-        for attr in ("embedded_html", "embedded_compiler", "embedded_browser"):
+        for attr in ("embedded_html", "embedded_compiler", "embedded_browser", "embedded_ppt"):
             widget = getattr(self, attr, None)
             if widget:
                 idx = self.stack.indexOf(widget)
@@ -583,9 +607,9 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("C"), self, lambda: self.set_canvas_tool(config.MODE_CIRCLE))
         QShortcut(QKeySequence("T"), self, lambda: self.set_canvas_tool(config.MODE_TEXT))
         QShortcut(QKeySequence("E"), self, lambda: self.set_canvas_tool(config.MODE_ERASER))
-        QShortcut(QKeySequence("Ctrl+Z"), self, self.canvas.undo)
-        QShortcut(QKeySequence("Ctrl+Y"), self, self.canvas.redo)
-        QShortcut(QKeySequence("Ctrl+Shift+Z"), self, self.canvas.redo)
+        QShortcut(QKeySequence("Ctrl+Z"), self, self._undo_active)
+        QShortcut(QKeySequence("Ctrl+Y"), self, self._redo_active)
+        QShortcut(QKeySequence("Ctrl+Shift+Z"), self, self._redo_active)
         QShortcut(QKeySequence("Ctrl+G"), self, lambda: self.toggle_grid())
         QShortcut(QKeySequence("Ctrl+T"), self, self.cycle_theme)
         QShortcut(QKeySequence("F11"), self, self.toggle_fullscreen)
@@ -600,6 +624,20 @@ class MainWindow(QMainWindow):
         except ValueError:
             nxt = themes[0]
         self.theme_combo.setCurrentText(nxt)
+
+    def _undo_active(self):
+        ppt = getattr(self, 'embedded_ppt', None)
+        if ppt is not None and self.stack.currentWidget() is ppt:
+            ppt.undo()
+        else:
+            self.canvas.undo()
+
+    def _redo_active(self):
+        ppt = getattr(self, 'embedded_ppt', None)
+        if ppt is not None and self.stack.currentWidget() is ppt:
+            ppt.redo()
+        else:
+            self.canvas.redo()
 
     # ==================================================================
     # PDF Export
@@ -693,6 +731,7 @@ class MainWindow(QMainWindow):
             config.CANVAS_HTML:     "HTML",
             config.CANVAS_COMPILER: "Compiler",
             config.CANVAS_BROWSER:  "Browser",
+            config.CANVAS_PPT:      "Presentation",
         }
 
         self.canvas_type_combo.blockSignals(True)
