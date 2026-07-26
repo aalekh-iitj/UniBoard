@@ -90,18 +90,6 @@ class MainWindow(QMainWindow):
         # ---- Core ----
         self.page_manager = PageManager()
 
-        # ---- Pre-initialize Qt WebEngine process ----
-        # The first QWebEngineView creation triggers a heavy one-time
-        # initialization (spawning the QtWebEngineProcess).  By creating
-        # a hidden dummy view here we move that cost to startup so the
-        # first switch to an HTML / Browser canvas feels instant.
-        try:
-            from PySide6.QtWebEngineWidgets import QWebEngineView
-            self._dummy_web = QWebEngineView(self)
-            self._dummy_web.hide()
-        except Exception:
-            self._dummy_web = None
-
         # ---- Stacked central widget ----
         self.stack = QStackedWidget()
         self.setCentralWidget(self.stack)
