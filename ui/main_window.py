@@ -3,12 +3,17 @@ UniBoard Main Window – Icon-based toolbar, QStackedWidget for canvas types,
 proper shortcuts, PDF export, fullscreen toggle.
 """
 import os
+import time
+import threading
+
+import numpy as np
+import cv2
 
 from PySide6.QtGui import (
     QAction, QColor, QFont, QKeySequence, QPixmap, QIcon,
     QShortcut, QPainter, QPen
 )
-from PySide6.QtCore import Qt, QSize, QRect, QRectF
+from PySide6.QtCore import Qt, QSize, QRect, QRectF, QTimer
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QDockWidget, QToolBar, QToolButton,
     QLabel, QComboBox, QSpinBox, QColorDialog, QFileDialog,
@@ -349,6 +354,19 @@ class MainWindow(QMainWindow):
         self.fs_btn.clicked.connect(self.toggle_fullscreen)
         tb.addWidget(self.fs_btn)
 
+        # ── Screen Recording ────────────────────────────────────────────
+        self.rec_btn = QToolButton()
+        self.rec_btn.setIcon(_make_icon("⬤", 28, "#d1d1d6"))
+        self.rec_btn.setToolTip("Start Recording  (Ctrl+R)")
+        self.rec_btn.setFixedSize(36, 32)
+        self.rec_btn.setCheckable(True)
+        self.rec_btn.clicked.connect(self.toggle_recording)
+        tb.addWidget(self.rec_btn)
+
+        # Recording state
+        self._recording = False
+        self._recorder = None
+
     # ==================================================================
     # Toolbar Helpers
     # ==================================================================
@@ -488,6 +506,42 @@ class MainWindow(QMainWindow):
             self._saved_geometry = self.geometry()
             self.showFullScreen()
             self.is_fullscreen = True
+
+    # ==================================================================
+    # Screen Recording
+    # ==================================================================
+    def toggle_recording(self):
+        if self._recording:
+            self._stop_recording()
+        else:
+            self._start_recording()
+
+    def _start_recording(self):
+        output_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Recording",
+            f"uniboard_recording_{int(time.time())}.avi",
+            "AVI Files (*.avi)"
+        )
+        if not output_path:
+            self.rec_btn.setChecked(False)
+            return
+
+        self._recorder = ScreenRecorder(output_path)
+        self._recorder.set_window(self)
+        self._recorder.start()
+        self._recording = True
+        self.rec_btn.setIcon(_make_icon("⬤", 28, "#f87171"))
+        self.rec_btn.setToolTip("Stop Recording")
+
+    def _stop_recording(self):
+        if self._recorder:
+            self._recorder.stop()
+            self._recorder = None
+        self._recording = False
+        self.rec_btn.setIcon(_make_icon("⬤", 28, "#d1d1d6"))
+        self.rec_btn.setToolTip("Start Recording  (Ctrl+R)")
+        self.rec_btn.setChecked(False)
+        QMessageBox.information(self, "Recording Saved", "Recording saved successfully!")
 
     # ==================================================================
     # Canvas Type Switching (QStackedWidget)
@@ -630,6 +684,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("F11"), self, self.toggle_fullscreen)
         QShortcut(QKeySequence("Ctrl+E"), self, self.export_to_pdf)
         QShortcut(QKeySequence("Ctrl+H"), self, lambda: self.toggle_handwriting())
+        QShortcut(QKeySequence("Ctrl+R"), self, self.toggle_recording)
 
     def cycle_theme(self):
         themes = ["Dark Glass", "Light Glass", "Slate"]
@@ -797,3 +852,67 @@ class MainWindow(QMainWindow):
         self._cleanup_embedded()
         # Make sure the plain-canvas overlays are shown
         self.canvas.update_overlay_visibility()
+
+
+# ---------------------------------------------------------------------------
+# Screen Recorder – captures the main window at a fixed FPS and writes to AVI
+# ---------------------------------------------------------------------------
+class ScreenRecorder:
+    """Records the main window's content to an AVI video file using OpenCV."""
+
+    def __init__(self, output_path: str, fps: int = 15):
+        self.output_path = output_path
+        self.fps = fps
+        self._running = False
+        self._thread = None
+        self._writer = None
+        self._window = None
+
+    def start(self):
+        self._running = True
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=5)
+        if self._writer:
+            self._writer.release()
+            self._writer = None
+
+    def set_window(self, window):
+        """Provide the QMainWindow to capture."""
+        self._window = window
+
+    def _run(self):
+        import time as _time
+        if self._window is None:
+            return
+
+        # Determine the capture area (the central widget / stack)
+        widget = self._window.stack
+        geom = widget.geometry()
+        w = geom.width()
+        h = geom.height()
+
+        # Use a four-character codec – 'XVID' is widely supported
+        fourcc = cv2.VideoWriter_fourcc(*"XVID")
+        self._writer = cv2.VideoWriter(self.output_path, fourcc, self.fps, (w, h))
+
+        interval = 1.0 / self.fps
+        while self._running:
+            # Grab the widget content via Qt's grab()
+            pixmap = widget.grab()
+            img = pixmap.toImage()
+            if img.isNull():
+                _time.sleep(interval)
+                continue
+
+            # Convert QImage → numpy array (BGR for OpenCV)
+            ptr = img.bits()
+            arr = np.array(ptr).reshape(img.height(), img.width, 4)
+            frame = arr[:, :, :3][:, :, ::-1]  # RGBA → BGR
+
+            self._writer.write(frame)
+            _time.sleep(interval)
