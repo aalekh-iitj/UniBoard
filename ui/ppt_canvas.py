@@ -551,7 +551,7 @@ class PptCanvasWidget(QWidget):
         self.file_label.setStyleSheet("color: #94a3b8; font-size: 13px; padding: 0 8px;")
         tb_layout.addWidget(self.file_label)
 
-        root.addWidget(toolbar)
+        root.addWidget(self._toolbar)
 
         # Slide view area
         self.slide_view = PptCanvasView(self)

@@ -107,7 +107,7 @@ class PdfCanvasWidget(QWidget):
         self.file_label.setStyleSheet("color: #94a3b8; font-size: 13px; padding: 0 8px;")
         tb_layout.addWidget(self.file_label)
 
-        root.addWidget(toolbar)
+        root.addWidget(self._toolbar)
 
         # Page view area
         self.page_view = PptCanvasView(self)
