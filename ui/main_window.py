@@ -664,6 +664,12 @@ class MainWindow(QMainWindow):
         self._update_color_swatch(self.canvas.pen_color)
         self._update_size_controls_style()
 
+        # Propagate theme to embedded canvas widgets
+        for attr in ("embedded_html", "embedded_compiler", "embedded_browser", "embedded_ppt", "embedded_pdf"):
+            widget = getattr(self, attr, None)
+            if widget is not None and hasattr(widget, "set_theme"):
+                widget.set_theme(theme_name)
+
     # ==================================================================
     # Shortcuts
     # ==================================================================

@@ -16,13 +16,86 @@ from PySide6.QtCore import QThread
 # Shared stylesheet fragments
 # ---------------------------------------------------------------------------
 
-_DARK_GLASS_BG = (
-    "background: qlineargradient("
-    "  x1:0, y1:0, x2:1, y2:1,"
-    "  stop:0 rgba(18, 18, 30, 230),"
-    "  stop:1 rgba(30, 30, 50, 210)"
-    ");"
-)
+# Theme-aware background gradients
+_THEME_BG = {
+    "Dark Glass": (
+        "background: qlineargradient("
+        "  x1:0, y1:0, x2:1, y2:1,"
+        "  stop:0 rgba(18, 18, 30, 230),"
+        "  stop:1 rgba(30, 30, 50, 210)"
+        ");"
+    ),
+    "Light Glass": (
+        "background: qlineargradient("
+        "  x1:0, y1:0, x2:1, y2:1,"
+        "  stop:0 rgba(255, 255, 255, 0.98),"
+        "  stop:1 rgba(245, 245, 250, 0.96)"
+        ");"
+    ),
+    "Slate": (
+        "background: #1e293b;"
+    ),
+}
+
+# Default to Dark Glass for backward compatibility
+_DARK_GLASS_BG = _THEME_BG["Dark Glass"]
+
+
+def _get_theme_bg(theme_name: str) -> str:
+    """Return the background gradient for the given theme."""
+    return _THEME_BG.get(theme_name, _DARK_GLASS_BG)
+
+
+def _get_theme_editor_style(theme_name: str) -> str:
+    """Return editor style matching the theme."""
+    if theme_name == "Light Glass":
+        return """
+            QPlainTextEdit {
+                background: rgba(255, 255, 255, 0.95);
+                color: #2a2a3a;
+                border: 1px solid rgba(0, 0, 0, 0.10);
+                border-radius: 8px;
+                padding: 10px;
+                selection-background-color: rgba(0, 102, 255, 0.25);
+                selection-color: #002266;
+                font-size: 13px;
+            }
+            QPlainTextEdit:focus {
+                border: 1px solid rgba(0, 102, 255, 0.45);
+            }
+        """
+    elif theme_name == "Slate":
+        return """
+            QPlainTextEdit {
+                background: #1e293b;
+                color: #e2e8f0;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 6px;
+                padding: 10px;
+                selection-background-color: rgba(59, 130, 246, 0.40);
+                selection-color: #ffffff;
+                font-size: 13px;
+            }
+            QPlainTextEdit:focus {
+                border: 1px solid rgba(59, 130, 246, 0.55);
+            }
+        """
+    else:  # Dark Glass
+        return """
+            QPlainTextEdit {
+                background: rgba(10, 10, 18, 0.92);
+                color: #e2e8f0;
+                border: 1px solid rgba(99, 102, 241, 0.25);
+                border-radius: 8px;
+                padding: 10px;
+                selection-background-color: rgba(99, 102, 241, 0.4);
+                selection-color: #ffffff;
+                font-size: 13px;
+            }
+            QPlainTextEdit:focus {
+                border: 1px solid rgba(99, 102, 241, 0.55);
+            }
+        """
 
 _BUTTON_BASE = """
     QPushButton {{
@@ -182,6 +255,14 @@ class HTMLRenderWidget(QWidget):
         super().__init__(parent)
         self._build_ui(initial_html)
 
+    def set_theme(self, theme_name: str):
+        """Update styles to match the selected theme."""
+        bg = _get_theme_bg(theme_name)
+        self._editor_panel.setStyleSheet(
+            f"QFrame {{ {bg} border-left: 1px solid rgba(99,102,241,0.18); }}"
+        )
+        self._editor.setStyleSheet(_get_theme_editor_style(theme_name))
+
     # -- UI construction -----------------------------------------------------
 
     def _build_ui(self, initial_html: str) -> None:
@@ -338,6 +419,13 @@ class CompilerWidget(QWidget):
         self._thread: CompilerRunThread | None = None
         self._build_ui(initial_code, initial_lang)
 
+    def set_theme(self, theme_name: str):
+        """Update styles to match the selected theme."""
+        bg = _get_theme_bg(theme_name)
+        self._splitter.setStyleSheet(_SPLITTER_STYLE)
+        self._editor.setStyleSheet(_get_theme_editor_style(theme_name))
+        self._console.setStyleSheet(_CONSOLE_STYLE)
+
     # -- UI construction -----------------------------------------------------
 
     def _build_ui(self, initial_code: str, initial_lang: str) -> None:
@@ -472,6 +560,11 @@ class BrowserWidget(QWidget):
         super().__init__(parent)
         self._build_ui(initial_url)
 
+    def set_theme(self, theme_name: str):
+        """Update styles to match the selected theme."""
+        bg = _get_theme_bg(theme_name)
+        # Browser nav bar and url bar styles are handled by the main stylesheet
+
     # -- UI construction -----------------------------------------------------
 
     def _build_ui(self, initial_url: str) -> None:
@@ -599,6 +692,25 @@ class HtmlCanvasWidget(QWidget):
         super().__init__(parent)
         self.persistent = False
         self._build_ui(initial_html)
+
+    def set_theme(self, theme_name: str):
+        """Update styles to match the selected theme."""
+        bg = _get_theme_bg(theme_name)
+        # The toolbar style is set via f-string with _DARK_GLASS_BG in _build_ui
+        # We need to update it here
+        # The toolbar is the first QFrame child
+        for child in self.findChildren(QFrame):
+            obj_name = child.objectName()
+            if obj_name == "htmlAnnotToolbar":
+                child.setStyleSheet(
+                    f"QFrame {{ {bg} border-bottom: 1px solid rgba(99,102,241,0.15); }}"
+                )
+            elif child.parent() is self and child != self._content_frame:
+                # Editor panel
+                child.setStyleSheet(
+                    f"QFrame {{ {bg} border-top: 1px solid rgba(99,102,241,0.18); }}"
+                )
+        self._editor.setStyleSheet(_get_theme_editor_style(theme_name))
 
     def _build_ui(self, initial_html: str) -> None:
         root = QVBoxLayout(self)

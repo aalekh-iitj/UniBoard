@@ -28,22 +28,37 @@ class PdfCanvasWidget(QWidget):
 
         self._build_ui()
 
+    def set_theme(self, theme_name: str):
+        """Update toolbar styles to match the selected theme."""
+        if theme_name == "Light Glass":
+            bg = "background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(255,255,255,0.98), stop:1 rgba(245,245,250,0.96));"
+        elif theme_name == "Slate":
+            bg = "background: #1e293b;"
+        else:
+            bg = "background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(18, 18, 30, 230), stop:1 rgba(30, 30, 50, 210));"
+        self._toolbar.setStyleSheet(f"""
+            QFrame#pdfToolbar {{
+                {bg}
+                border-bottom: 1px solid rgba(99, 102, 241, 0.15);
+            }}
+        """)
+
     def _build_ui(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
         # Top toolbar
-        toolbar = QFrame(self)
-        toolbar.setObjectName("pdfToolbar")
-        toolbar.setStyleSheet("""
+        self._toolbar = QFrame(self)
+        self._toolbar.setObjectName("pdfToolbar")
+        self._toolbar.setStyleSheet("""
             QFrame#pdfToolbar {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                     stop:0 rgba(18, 18, 30, 230), stop:1 rgba(30, 30, 50, 210));
                 border-bottom: 1px solid rgba(99, 102, 241, 0.15);
             }
         """)
-        tb_layout = QHBoxLayout(toolbar)
+        tb_layout = QHBoxLayout(self._toolbar)
         tb_layout.setContentsMargins(14, 10, 14, 10)
         tb_layout.setSpacing(10)
 
