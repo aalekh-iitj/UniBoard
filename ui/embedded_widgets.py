@@ -545,6 +545,67 @@ class CompilerWidget(QWidget):
         if idx >= 0:
             self._lang_combo.setCurrentIndex(idx)
 
+    # -- Drawing-tool compatibility properties (no-ops) -----------------------
+    # The compiler is a code editor; it doesn't use drawing tools.
+    # These properties exist so the main toolbar can call them without crashing.
+
+    @property
+    def pen_color(self):
+        return QColor("#00ffcc")
+
+    @pen_color.setter
+    def pen_color(self, value):
+        pass
+
+    @property
+    def pen_width(self):
+        return 3
+
+    @pen_width.setter
+    def pen_width(self, value):
+        pass
+
+    @property
+    def text_size(self):
+        return 16
+
+    @text_size.setter
+    def text_size(self, value):
+        pass
+
+    @property
+    def highlighter_color(self):
+        return QColor(255, 255, 0, 100)
+
+    @highlighter_color.setter
+    def highlighter_color(self, value):
+        pass
+
+    @property
+    def highlighter_width(self):
+        return 15
+
+    @highlighter_width.setter
+    def highlighter_width(self, value):
+        pass
+
+    @property
+    def eraser_width(self):
+        return 24
+
+    @eraser_width.setter
+    def eraser_width(self, value):
+        pass
+
+    def set_tool(self, tool_mode):
+        pass
+
+    def undo(self):
+        pass
+
+    def redo(self):
+        pass
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  3. HtmlCanvasWidget  (HTML5 <canvas>-based drawing tool, Browser pattern)
@@ -1322,11 +1383,23 @@ class HtmlCanvasWidget(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._annot_overlay.setGeometry(self._web.geometry())
+        self._update_annot_overlay()
 
     def showEvent(self, event):
         super().showEvent(event)
-        self._annot_overlay.setGeometry(self._web.geometry())
+        self._update_annot_overlay()
+
+    def _update_annot_overlay(self):
+        """Position the annotation overlay over the web view and set its
+        scene rect so annotations are visible and at correct positions."""
+        geom = self._web.geometry()
+        self._annot_overlay.setGeometry(geom)
+        w = geom.width()
+        h = geom.height()
+        if w > 0 and h > 0:
+            scene = self._annot_overlay.scene()
+            scene.setSceneRect(0, 0, w, h)
+            self._annot_overlay.resetTransform()
 
     def _toggle_editor(self):
         visible = not self._editor_panel.isVisible()
@@ -1344,29 +1417,67 @@ class HtmlCanvasWidget(QWidget):
         self._web.setHtml(html_code)
 
     def set_tool(self, tool_mode):
-        from PySide6.QtCore import QRect
         is_drawing = tool_mode != 0  # MODE_SELECT = 0
         self._annot_overlay.set_tool(tool_mode)
         self._annot_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, not is_drawing)
         if is_drawing:
             self._annot_overlay.raise_()
-            self._annot_overlay.setGeometry(self._web.geometry())
+            self._update_annot_overlay()
         else:
             self._annot_overlay.lower()
 
-    def set_pen_color(self, color):
+    @property
+    def pen_color(self):
+        return self._annot_overlay.pen_color
+
+    @pen_color.setter
+    def pen_color(self, color):
         self._annot_overlay.pen_color = color
         self._annot_overlay.highlighter_color = QColor(
             color.red(), color.green(), color.blue(), 100
         )
 
-    def set_pen_width(self, width):
+    @property
+    def pen_width(self):
+        return self._annot_overlay.pen_width
+
+    @pen_width.setter
+    def pen_width(self, width):
         self._annot_overlay.pen_width = width
         self._annot_overlay.highlighter_width = max(width * 4, 8)
         self._annot_overlay.eraser_width = max(width * 5, 10)
 
-    def set_text_size(self, size):
+    @property
+    def text_size(self):
+        return self._annot_overlay.text_size
+
+    @text_size.setter
+    def text_size(self, size):
         self._annot_overlay.text_size = size
+
+    @property
+    def highlighter_color(self):
+        return self._annot_overlay.highlighter_color
+
+    @highlighter_color.setter
+    def highlighter_color(self, color):
+        self._annot_overlay.highlighter_color = color
+
+    @property
+    def highlighter_width(self):
+        return self._annot_overlay.highlighter_width
+
+    @highlighter_width.setter
+    def highlighter_width(self, width):
+        self._annot_overlay.highlighter_width = width
+
+    @property
+    def eraser_width(self):
+        return self._annot_overlay.eraser_width
+
+    @eraser_width.setter
+    def eraser_width(self, width):
+        self._annot_overlay.eraser_width = width
 
     def undo(self):
         self._annot_overlay.undo()

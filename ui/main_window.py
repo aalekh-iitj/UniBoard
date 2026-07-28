@@ -385,8 +385,11 @@ class MainWindow(QMainWindow):
     def set_canvas_tool(self, tool_mode):
         for mode, btn in self.tool_actions.items():
             btn.setChecked(mode == tool_mode)
+        # Always update the canvas's tool so it's correct when switching back
+        self.canvas.set_tool(tool_mode)
         target = self._get_active_target()
-        target.set_tool(tool_mode)
+        if target is not self.canvas:
+            target.set_tool(tool_mode)
 
     def _update_size_controls_style(self):
         """Refresh brush/text box borders & icons to match current pen color."""
@@ -459,7 +462,7 @@ class MainWindow(QMainWindow):
         current = self.stack.currentWidget()
         if current is self.canvas:
             return self.canvas
-        for attr in ("embedded_html", "embedded_browser", "embedded_ppt", "embedded_pdf"):
+        for attr in ("embedded_html", "embedded_compiler", "embedded_browser", "embedded_ppt", "embedded_pdf"):
             widget = getattr(self, attr, None)
             if widget is not None and current is widget:
                 return widget
@@ -632,6 +635,24 @@ class MainWindow(QMainWindow):
             self.stack.addWidget(self.embedded_pdf)
             self.stack.setCurrentWidget(self.embedded_pdf)
 
+        # Sync the current tool/color/size to the newly created embedded widget
+        # so the toolbar state matches the canvas state.
+        self._sync_embedded_state()
+
+    def _sync_embedded_state(self):
+        """Push the current tool, pen color, pen width, and text size from the
+        main canvas to whichever embedded widget is currently active."""
+        target = self._get_active_target()
+        if target is self.canvas:
+            return
+        try:
+            target.set_tool(self.canvas.current_tool)
+            target.pen_color = self.canvas.pen_color
+            target.pen_width = self.canvas.pen_width
+            target.text_size = self.canvas.text_size
+        except Exception:
+            pass
+
     def _cleanup_embedded(self):
         for attr in ("embedded_html", "embedded_compiler", "embedded_browser", "embedded_ppt", "embedded_pdf"):
             widget = getattr(self, attr, None)
@@ -673,6 +694,14 @@ class MainWindow(QMainWindow):
             widget = getattr(self, attr, None)
             if widget is not None and hasattr(widget, "set_theme"):
                 widget.set_theme(theme_name)
+
+        # Also sync the theme's default pen color to the active embedded widget
+        target = self._get_active_target()
+        if target is not self.canvas:
+            try:
+                target.pen_color = self.canvas.pen_color
+            except Exception:
+                pass
 
     # ==================================================================
     # Shortcuts

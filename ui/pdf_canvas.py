@@ -312,17 +312,56 @@ class PdfCanvasWidget(QWidget):
     def set_tool(self, tool_mode):
         self.page_view.set_tool(tool_mode)
 
-    def set_pen_color(self, color):
+    @property
+    def pen_color(self):
+        return self.page_view.pen_color
+
+    @pen_color.setter
+    def pen_color(self, color):
         self.page_view.pen_color = color
         self.page_view.highlighter_color = QColor(color.red(), color.green(), color.blue(), 100)
 
-    def set_pen_width(self, width):
+    @property
+    def pen_width(self):
+        return self.page_view.pen_width
+
+    @pen_width.setter
+    def pen_width(self, width):
         self.page_view.pen_width = width
         self.page_view.highlighter_width = max(width * 4, 8)
         self.page_view.eraser_width = max(width * 5, 10)
 
-    def set_text_size(self, size):
+    @property
+    def text_size(self):
+        return self.page_view.text_size
+
+    @text_size.setter
+    def text_size(self, size):
         self.page_view.text_size = size
+
+    @property
+    def highlighter_color(self):
+        return self.page_view.highlighter_color
+
+    @highlighter_color.setter
+    def highlighter_color(self, color):
+        self.page_view.highlighter_color = color
+
+    @property
+    def highlighter_width(self):
+        return self.page_view.highlighter_width
+
+    @highlighter_width.setter
+    def highlighter_width(self, width):
+        self.page_view.highlighter_width = width
+
+    @property
+    def eraser_width(self):
+        return self.page_view.eraser_width
+
+    @eraser_width.setter
+    def eraser_width(self, width):
+        self.page_view.eraser_width = width
 
     def undo(self):
         self.page_view.undo()
