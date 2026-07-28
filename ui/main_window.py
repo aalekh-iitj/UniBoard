@@ -25,7 +25,7 @@ import config
 from core.page_manager import PageManager
 from ui.canvas import WhiteboardCanvas
 from ui.sidebar import SidebarWidget
-from ui.embedded_widgets import CompilerWidget, BrowserWidget, HtmlCanvasWidget
+from ui.embedded_widgets import CompilerWidget, HtmlCanvasWidget, Html5CanvasWidget
 from ui.ppt_canvas import PptCanvasWidget
 from ui.pdf_canvas import PdfCanvasWidget
 from ui.styles import Themes
@@ -459,7 +459,7 @@ class MainWindow(QMainWindow):
         current = self.stack.currentWidget()
         if current is self.canvas:
             return self.canvas
-        for attr in ("embedded_html", "embedded_ppt", "embedded_pdf"):
+        for attr in ("embedded_html", "embedded_browser", "embedded_ppt", "embedded_pdf"):
             widget = getattr(self, attr, None)
             if widget is not None and current is widget:
                 return widget
@@ -603,11 +603,15 @@ class MainWindow(QMainWindow):
             self.stack.setCurrentWidget(self.embedded_compiler)
 
         elif mode == config.CANVAS_BROWSER:
-            self.embedded_browser = BrowserWidget(
-                page.meta.get("live_url", "https://www.google.com")
+            self.embedded_browser = Html5CanvasWidget(
+                initial_state=page.meta.get("canvas_state", ""),
+                initial_title=page.meta.get("canvas_title", ""),
             )
-            self.embedded_browser.url_changed.connect(
-                lambda url: page.meta.update({"live_url": url})
+            self.embedded_browser.canvas_changed.connect(
+                lambda data_url: page.meta.update({"canvas_state": data_url})
+            )
+            self.embedded_browser.title_changed.connect(
+                lambda title: page.meta.update({"canvas_title": title})
             )
             self.stack.addWidget(self.embedded_browser)
             self.stack.setCurrentWidget(self.embedded_browser)

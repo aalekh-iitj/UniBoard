@@ -4,12 +4,15 @@ from PySide6.QtWidgets import (
     QCheckBox, QStackedWidget
 )
 from PySide6.QtGui import QFont, QColor
-from PySide6.QtCore import Qt, Signal, QUrl
+from PySide6.QtCore import Qt, Signal, QUrl, QObject, Slot, Property, QTimer
 from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtWebChannel import QWebChannel
 from core.compiler import CodeCompiler
 from ui.ppt_canvas import PptCanvasView
 
 from PySide6.QtCore import QThread
+
+import json
 
 
 # ---------------------------------------------------------------------------
@@ -544,35 +547,317 @@ class CompilerWidget(QWidget):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  3. BrowserWidget
+#  3. HtmlCanvasWidget  (HTML5 <canvas>-based drawing tool, Browser pattern)
 # ═══════════════════════════════════════════════════════════════════════════
 
-class BrowserWidget(QWidget):
-    """Minimal embedded web browser with navigation controls."""
+# Self-contained HTML5 page that renders an interactive <canvas> surface.
+# It exposes a small JS API (setTool, setColor, setWidth, clearCanvas,
+# loadCanvas, getCanvasDataURL) and talks back to Python through a
+# QWebChannel bridge named "bridge".
+_HTML5_CANVAS_PAGE = r"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>HTML5 Canvas</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%; width: 100%;
+    background: #0d0d11; overflow: hidden;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+  }
+  #canvas {
+    display: block; cursor: crosshair;
+    background: #0d0d11;
+    touch-action: none;
+  }
+  #statusBar {
+    position: fixed; left: 12px; bottom: 10px;
+    color: #6366f1; font-size: 12px; font-weight: 500;
+    background: rgba(20, 20, 38, 0.65);
+    border: 1px solid rgba(99, 102, 241, 0.25);
+    border-radius: 6px;
+    padding: 4px 10px;
+    pointer-events: none;
+    user-select: none;
+  }
+</style>
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<div id="statusBar">HTML5 Canvas — ready</div>
+<script>
+(function () {
+  'use strict';
 
-    url_changed = Signal(str)
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  const statusBar = document.getElementById('statusBar');
+
+  // Persistent state for the canvas
+  let tool = 'pen';
+  let color = '#00ffcc';
+  let width = 3;
+  let isDrawing = false;
+  let lastX = 0, lastY = 0;
+  let bridge = null;
+  let suppressSave = false;  // when true, don't push a snapshot (e.g. during load)
+
+  function setStatus(text) { if (statusBar) statusBar.textContent = text; }
+
+  function resizeCanvas() {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    if (canvas.width === w && canvas.height === h) return;
+    // Preserve the current drawing across resizes.
+    const snapshot = canvas.toDataURL();
+    canvas.width = w;
+    canvas.height = h;
+    if (snapshot && snapshot.length > 100) {
+      const img = new Image();
+      img.onload = function () { ctx.drawImage(img, 0, 0); };
+      img.src = snapshot;
+    }
+  }
+
+  function getPos(e) {
+    const r = canvas.getBoundingClientRect();
+    const t = (e.touches && e.touches.length) ? e.touches[0] : e;
+    return [t.clientX - r.left, t.clientY - r.top];
+  }
+
+  function strokeSettings() {
+    if (tool === 'eraser') {
+      return {
+        style: '#0d0d11',
+        lineWidth: Math.max(width * 4, 12)
+      };
+    }
+    if (tool === 'highlighter') {
+      // Parse hex (#rrggbb) into rgba with low alpha
+      let c = color;
+      if (c.startsWith('#') && c.length === 7) {
+        const r = parseInt(c.substr(1, 2), 16);
+        const g = parseInt(c.substr(3, 2), 16);
+        const b = parseInt(c.substr(5, 2), 16);
+        c = 'rgba(' + r + ',' + g + ',' + b + ',0.35)';
+      }
+      return { style: c, lineWidth: Math.max(width * 4, 12) };
+    }
+    return { style: color, lineWidth: width };
+  }
+
+  function startDraw(e) {
+    e.preventDefault();
+    isDrawing = true;
+    const p = getPos(e);
+    lastX = p[0]; lastY = p[1];
+  }
+
+  function continueDraw(e) {
+    if (!isDrawing) return;
+    e.preventDefault();
+    const p = getPos(e);
+    const s = strokeSettings();
+    ctx.save();
+    ctx.strokeStyle = s.style;
+    ctx.lineWidth = s.lineWidth;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(lastX, lastY);
+    ctx.lineTo(p[0], p[1]);
+    ctx.stroke();
+    ctx.restore();
+    lastX = p[0]; lastY = p[1];
+  }
+
+  function endDraw() {
+    if (!isDrawing) return;
+    isDrawing = false;
+    if (bridge && !suppressSave) {
+      try { bridge.saveCanvas(canvas.toDataURL()); } catch (e) {}
+    }
+  }
+
+  // ---- Public API (called from Python via runJavaScript) ------------------
+
+  window.setTool = function (t) {
+    tool = String(t || 'pen');
+    setStatus('Tool: ' + tool);
+  };
+  window.setColor = function (c) {
+    color = String(c || '#00ffcc');
+    setStatus('Color: ' + color);
+  };
+  window.setWidth = function (w) {
+    width = Math.max(1, parseInt(w, 10) || 3);
+    setStatus('Width: ' + width);
+  };
+  window.clearCanvas = function () {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (bridge) {
+      try { bridge.saveCanvas(canvas.toDataURL()); } catch (e) {}
+    }
+  };
+  window.loadCanvas = function (dataUrl) {
+    if (!dataUrl) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      return;
+    }
+    const img = new Image();
+    img.onload = function () {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0);
+    };
+    img.onerror = function () {
+      // Bad data URL — silently ignore.
+    };
+    img.src = dataUrl;
+  };
+  window.getCanvasDataURL = function () {
+    return canvas.toDataURL();
+  };
+  window.applySnapshot = function (dataUrl) {
+    // Used by the "Go" / Save button — keeps the canvas as-is and just
+    // pushes a new history entry for the current state.
+    if (bridge) {
+      try { bridge.saveCanvas(dataUrl || canvas.toDataURL()); } catch (e) {}
+    }
+  };
+
+  // ---- Event wiring -------------------------------------------------------
+
+  canvas.addEventListener('mousedown', startDraw);
+  canvas.addEventListener('mousemove', continueDraw);
+  canvas.addEventListener('mouseup', endDraw);
+  canvas.addEventListener('mouseleave', endDraw);
+  canvas.addEventListener('touchstart', startDraw, { passive: false });
+  canvas.addEventListener('touchmove', continueDraw, { passive: false });
+  canvas.addEventListener('touchend', endDraw);
+  window.addEventListener('resize', resizeCanvas);
+
+  // ---- QWebChannel bootstrap ---------------------------------------------
+  if (typeof QWebChannel !== 'undefined') {
+    new QWebChannel(qt.webChannelTransport, function (channel) {
+      bridge = channel.objects.bridge;
+      // Tell Python we're ready (it will push initial state if any).
+      if (bridge && bridge.notifyReady) {
+        try { bridge.notifyReady(); } catch (e) {}
+      }
+    });
+  } else {
+    setStatus('QWebChannel not available');
+  }
+
+  resizeCanvas();
+})();
+</script>
+</body>
+</html>
+"""
+
+
+class HtmlCanvasBridge(QObject):
+    """Bridge object exposed to the HTML5 <canvas> JavaScript via QWebChannel.
+
+    Python → JS is done with ``runJavaScript()``; JS → Python is done through
+    the ``@Slot`` methods on this object. We also expose a couple of
+    properties (color, width, tool) so the JS side can read them if needed.
+    """
+
+    # JS → Python signals
+    canvas_saved = Signal(str)         # data URL of the canvas state
+    ready = Signal()                   # JS side finished bootstrapping
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._color = "#00ffcc"
+        self._width = 3
+        self._tool = "pen"
+
+    # -- Properties (read-only from JS side) --------------------------------
+
+    @Property(str)
+    def color(self) -> str:
+        return self._color
+
+    @Property(int)
+    def width(self) -> int:
+        return self._width
+
+    @Property(str)
+    def tool(self) -> str:
+        return self._tool
+
+    # -- Slots (JS → Python) ------------------------------------------------
+
+    @Slot(str)
+    def saveCanvas(self, data_url: str) -> None:
+        self.canvas_saved.emit(data_url)
+
+    @Slot()
+    def notifyReady(self) -> None:
+        self.ready.emit()
+
+
+class Html5CanvasWidget(QWidget):
+    """Browser-pattern widget whose main content is an HTML5 <canvas>.
+
+    Header layout mirrors the old BrowserWidget:
+        [ ⬅ Undo ] [ ➡ Redo ] [ 🔄 Clear ]   [   canvas title …   ] [ Save ]
+
+    The "URL bar" doubles as a canvas title (purely metadata, free-form text).
+    The main area is a ``QWebEngineView`` hosting an HTML5 page that draws
+    onto a real ``<canvas>`` element with the pen / eraser / highlighter
+    tools. State is synced to the page through ``runJavaScript`` and
+    received back as a data URL via the ``HtmlCanvasBridge``.
+    """
+
+    canvas_changed = Signal(str)   # data URL of the latest canvas state
+    title_changed = Signal(str)    # canvas title (the "URL bar" text)
+
+    _MAX_HISTORY = 30              # undo / redo depth cap
 
     def __init__(
         self,
-        initial_url: str = "https://www.google.com",
+        initial_state: str = "",
+        initial_title: str = "",
         parent: QWidget | None = None,
-    ):
+    ) -> None:
         super().__init__(parent)
-        self._build_ui(initial_url)
+        self._bridge = HtmlCanvasBridge(self)
+        self._undo_stack: list[str] = []
+        self._redo_stack: list[str] = []
+        self._current_state: str = initial_state or ""
+        self._title: str = initial_title or ""
+        self._js_ready: bool = False
+        self._pending_state: str = initial_state or ""
+        self._suppress_history: bool = False
 
-    def set_theme(self, theme_name: str):
-        """Update styles to match the selected theme."""
-        bg = _get_theme_bg(theme_name)
-        # Browser nav bar and url bar styles are handled by the main stylesheet
+        self._build_ui()
 
-    # -- UI construction -----------------------------------------------------
+        # Bridge wiring
+        self._bridge.canvas_saved.connect(self._on_canvas_saved)
+        self._bridge.ready.connect(self._on_js_ready)
+        self._channel = QWebChannel(self)
+        self._channel.registerObject("bridge", self._bridge)
+        self._web.page().setWebChannel(self._channel)
+        self._web.loadFinished.connect(self._on_load_finished)
 
-    def _build_ui(self, initial_url: str) -> None:
+        # Load the HTML5 canvas page (qrc:/ lets us resolve the
+        # qwebchannel.js script shipped with Qt).
+        self._web.setHtml(_HTML5_CANVAS_PAGE, QUrl("qrc:///"))
+
+    # ------------------------------------------------------------------
+    # UI
+    # ------------------------------------------------------------------
+    def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # — Navigation bar —
+        # — Navigation bar (mirrors old BrowserWidget chrome) —
         nav = QFrame(self)
         nav.setStyleSheet(
             f"QFrame {{ {_DARK_GLASS_BG} border-bottom: 1px solid rgba(99,102,241,0.15); }}"
@@ -603,80 +888,300 @@ class BrowserWidget(QWidget):
             }
         """
 
-        self._back_btn = QPushButton("⬅️")
+        self._back_btn = QPushButton("⬅")
         self._back_btn.setStyleSheet(nav_btn_style)
         self._back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._back_btn.setToolTip("Back")
-        self._back_btn.clicked.connect(self.navigate_back)
+        self._back_btn.setToolTip("Undo last stroke")
+        self._back_btn.clicked.connect(self._undo)
         nav_layout.addWidget(self._back_btn)
 
-        self._fwd_btn = QPushButton("➡️")
+        self._fwd_btn = QPushButton("➡")
         self._fwd_btn.setStyleSheet(nav_btn_style)
         self._fwd_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._fwd_btn.setToolTip("Forward")
-        self._fwd_btn.clicked.connect(self.navigate_forward)
+        self._fwd_btn.setToolTip("Redo stroke")
+        self._fwd_btn.clicked.connect(self._redo)
         nav_layout.addWidget(self._fwd_btn)
 
-        self._reload_btn = QPushButton("🔄")
+        self._reload_btn = QPushButton("🧹")
         self._reload_btn.setStyleSheet(nav_btn_style)
         self._reload_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._reload_btn.setToolTip("Reload")
-        self._reload_btn.clicked.connect(self.navigate_reload)
+        self._reload_btn.setToolTip("Clear canvas")
+        self._reload_btn.clicked.connect(self._clear)
         nav_layout.addWidget(self._reload_btn)
 
-        # URL bar
+        # "URL" bar — repurposed as a canvas title input
         self._url_bar = QLineEdit()
         self._url_bar.setStyleSheet(_LINE_EDIT_STYLE)
-        self._url_bar.setPlaceholderText("Enter URL…")
-        self._url_bar.setText(initial_url)
-        self._url_bar.returnPressed.connect(self.load_url)
+        self._url_bar.setPlaceholderText("Canvas title…")
+        self._url_bar.setText(self._title)
+        self._url_bar.returnPressed.connect(self._on_title_entered)
         nav_layout.addWidget(self._url_bar, 1)
 
-        # Go button
-        self._go_btn = QPushButton("Go")
+        # "Go" → Save snapshot
+        self._go_btn = QPushButton("Save")
         self._go_btn.setStyleSheet(_ACCENT_BTN)
         self._go_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._go_btn.clicked.connect(self.load_url)
+        self._go_btn.setToolTip("Save current canvas snapshot")
+        self._go_btn.clicked.connect(self._save_snapshot)
         nav_layout.addWidget(self._go_btn)
 
         root.addWidget(nav)
 
-        # — Web view —
+        # — HTML5 <canvas> surface —
         self._web = QWebEngineView(self)
-        self._web.setUrl(QUrl(initial_url))
-        self._web.urlChanged.connect(self._on_url_loaded)
         root.addWidget(self._web, 1)
 
-    # -- Navigation ----------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Theme hook (kept for API parity with the other embedded widgets)
+    # ------------------------------------------------------------------
+    def set_theme(self, theme_name: str) -> None:
+        """Theme changes are picked up automatically via the QSS; this hook
+        exists so the main window can call it without checking capability.
+        """
+        return
 
-    def load_url(self) -> None:
-        url = self._url_bar.text().strip()
-        if not url:
+    # ------------------------------------------------------------------
+    # JS bridge helpers
+    # ------------------------------------------------------------------
+    def _run_js(self, code: str) -> None:
+        if self._web and self._web.page():
+            self._web.page().runJavaScript(code)
+
+    def _sync_tool_state(self) -> None:
+        """Push the current tool / color / width from Python to JS."""
+        self._run_js(f"setTool({json.dumps(self._bridge._tool)});")
+        self._run_js(f"setColor({json.dumps(self._bridge._color)});")
+        self._run_js(f"setWidth({int(self._bridge._width)});")
+
+    def _on_load_finished(self, ok: bool) -> None:
+        if not ok:
             return
-        if not url.startswith(("http://", "https://")):
-            url = "https://" + url
-        self._url_bar.setText(url)
-        self._web.setUrl(QUrl(url))
+        # The page itself wires up QWebChannel; we just wait for the
+        # ``ready`` signal before pushing initial state.
 
-    def navigate_back(self) -> None:
-        self._web.back()
+    def _on_js_ready(self) -> None:
+        self._js_ready = True
+        self._sync_tool_state()
+        if self._pending_state:
+            self._suppress_history = True
+            try:
+                self._run_js(f"loadCanvas({json.dumps(self._pending_state)});")
+            finally:
+                self._suppress_history = False
+            # Seed the history with the loaded state so undo/redo has a
+            # sensible starting point.
+            self._undo_stack.append(self._pending_state)
+            self._current_state = self._pending_state
+            self._pending_state = ""
 
-    def navigate_forward(self) -> None:
-        self._web.forward()
+    # ------------------------------------------------------------------
+    # Slots: stroke → history
+    # ------------------------------------------------------------------
+    def _on_canvas_saved(self, data_url: str) -> None:
+        if self._suppress_history:
+            return
+        # Avoid duplicate consecutive entries (e.g. when reloading a
+        # snapshot that matches the current state).
+        if self._undo_stack and self._undo_stack[-1] == data_url:
+            self._current_state = data_url
+            return
+        self._undo_stack.append(data_url)
+        if len(self._undo_stack) > self._MAX_HISTORY:
+            self._undo_stack.pop(0)
+        self._redo_stack.clear()
+        self._current_state = data_url
+        self.canvas_changed.emit(data_url)
 
-    def navigate_reload(self) -> None:
-        self._web.reload()
+    # ------------------------------------------------------------------
+    # Nav-bar actions
+    # ------------------------------------------------------------------
+    def _undo(self) -> None:
+        if len(self._undo_stack) <= 1:
+            return
+        self._redo_stack.append(self._undo_stack.pop())
+        state = self._undo_stack[-1]
+        self._current_state = state
+        self._suppress_history = True
+        try:
+            self._run_js(f"loadCanvas({json.dumps(state)});")
+        finally:
+            self._suppress_history = False
+        self.canvas_changed.emit(state)
 
-    def _on_url_loaded(self, qurl: QUrl) -> None:
-        url_str = qurl.toString()
-        self._url_bar.setText(url_str)
-        self.url_changed.emit(url_str)
+    def _redo(self) -> None:
+        if not self._redo_stack:
+            return
+        state = self._redo_stack.pop()
+        self._undo_stack.append(state)
+        self._current_state = state
+        self._suppress_history = True
+        try:
+            self._run_js(f"loadCanvas({json.dumps(state)});")
+        finally:
+            self._suppress_history = False
+        self.canvas_changed.emit(state)
 
-    # -- Public API ----------------------------------------------------------
+    def _clear(self) -> None:
+        self._suppress_history = True
+        try:
+            self._run_js("clearCanvas();")
+        finally:
+            self._suppress_history = False
+        # The JS side will emit a saveCanvas with the empty data URL
+        # which we want to record as a normal history step.
 
-    def set_url(self, url: str) -> None:
-        self._url_bar.setText(url)
-        self._web.setUrl(QUrl(url))
+    def _save_snapshot(self) -> None:
+        """Push a new history entry from the current canvas state and
+        give the user a quick visual confirmation.
+        """
+        self._run_js("applySnapshot('');")
+        # Briefly flash the button text as confirmation.
+        original = self._go_btn.text()
+        self._go_btn.setText("✓")
+        QTimer.singleShot(
+            800,
+            lambda: self._go_btn.setText(original) if self._go_btn else None,
+        )
+
+    def _on_title_entered(self) -> None:
+        self._title = self._url_bar.text().strip()
+        self.title_changed.emit(self._title)
+
+    # ------------------------------------------------------------------
+    # Public API used by the main toolbar
+    # ------------------------------------------------------------------
+    # Integer tool-mode mapping (from `config`) → JS tool name.
+    _INT_TO_TOOL = {
+        0: "select",        # MODE_SELECT (no-op for the canvas)
+        1: "pen",           # MODE_PEN
+        2: "highlighter",   # MODE_HIGHLIGHTER
+        3: "eraser",        # MODE_ERASER
+        4: "text",          # MODE_TEXT (no-op for the canvas)
+        5: "line",          # MODE_LINE (no-op)
+        6: "rect",          # MODE_RECT (no-op)
+        7: "circle",        # MODE_CIRCLE (no-op)
+    }
+
+    def set_tool(self, tool) -> None:
+        """Switch the active drawing tool. Accepts either the integer
+        ``MODE_*`` constants from ``config`` or a JS tool name
+        (``'pen' | 'eraser' | 'highlighter' | 'select' | 'text'``).
+        """
+        if isinstance(tool, int):
+            tool = self._INT_TO_TOOL.get(tool, "pen")
+        if tool in ("select", "text", "line", "rect", "circle"):
+            # The HTML5 canvas only meaningfully supports pen/eraser/highlighter.
+            # Treat the rest as no-ops so the toolbar doesn't crash.
+            self._bridge._tool = "pen"
+            self._run_js(f"setTool({json.dumps('pen')});")
+            return
+        tool = str(tool or "pen")
+        self._bridge._tool = tool
+        self._run_js(f"setTool({json.dumps(tool)});")
+
+    def set_color(self, color) -> None:
+        # Accept QColor too — the main toolbar sometimes passes one.
+        c = color.name() if hasattr(color, "name") else str(color)
+        self._bridge._color = c
+        self._run_js(f"setColor({json.dumps(c)});")
+
+    def set_width(self, width: int) -> None:
+        width = max(1, int(width))
+        self._bridge._width = width
+        self._run_js(f"setWidth({width});")
+
+    # ------------------------------------------------------------------
+    # Attribute-style API for compatibility with the main toolbar
+    # (which uses ``target.pen_color = color`` etc. via _get_active_target).
+    # ------------------------------------------------------------------
+    @property
+    def pen_color(self):
+        from PySide6.QtGui import QColor
+        return QColor(self._bridge._color)
+
+    @pen_color.setter
+    def pen_color(self, value):
+        self.set_color(value)
+
+    @property
+    def pen_width(self) -> int:
+        return self._bridge._width
+
+    @pen_width.setter
+    def pen_width(self, value: int):
+        self.set_width(value)
+
+    # Attributes the main toolbar touches for the plain canvas — keep them
+    # as harmless no-ops so ``target.text_size = ...`` etc. don't crash.
+    @property
+    def text_size(self) -> int:
+        return 16
+
+    @text_size.setter
+    def text_size(self, value: int) -> None:
+        # Not applicable to the HTML5 canvas — silently accept.
+        return
+
+    @property
+    def highlighter_color(self):
+        from PySide6.QtGui import QColor
+        return QColor(self._bridge._color)
+
+    @highlighter_color.setter
+    def highlighter_color(self, value) -> None:
+        return
+
+    @property
+    def highlighter_width(self) -> int:
+        return self._bridge._width
+
+    @highlighter_width.setter
+    def highlighter_width(self, value: int) -> None:
+        return
+
+    @property
+    def eraser_width(self) -> int:
+        return self._bridge._width
+
+    @eraser_width.setter
+    def eraser_width(self, value: int) -> None:
+        return
+
+    def undo(self) -> None:
+        self._undo()
+
+    def redo(self) -> None:
+        self._redo()
+
+    def get_state(self) -> str:
+        """Return the latest canvas state (data URL)."""
+        return self._current_state
+
+    def set_state(self, data_url: str) -> None:
+        """Replace the canvas with a previously saved state."""
+        if not data_url:
+            return
+        self._current_state = data_url
+        if not self._js_ready:
+            # Page not bootstrapped yet — defer until ready.
+            self._pending_state = data_url
+            return
+        self._suppress_history = True
+        try:
+            self._run_js(f"loadCanvas({json.dumps(data_url)});")
+        finally:
+            self._suppress_history = False
+        # Reset history around the freshly loaded state.
+        self._undo_stack = [data_url]
+        self._redo_stack.clear()
+
+    def get_title(self) -> str:
+        return self._title
+
+    def set_title(self, title: str) -> None:
+        self._title = title or ""
+        if self._url_bar:
+            self._url_bar.setText(self._title)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
