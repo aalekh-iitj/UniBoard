@@ -149,6 +149,18 @@ class PptCanvasView(QGraphicsView):
         # Eraser cursor
         self._eraser_cursor = self._make_eraser_cursor()
 
+        # Zoom state
+        self._zoom = 1.0
+
+    @property
+    def zoom(self):
+        return self._zoom
+
+    def set_zoom(self, zoom_factor: float):
+        self._zoom = max(0.1, min(zoom_factor, 10.0))
+        self.resetTransform()
+        self.scale(self._zoom, self._zoom)
+
     def set_slide_background(self, pixmap):
         self._scene.clear()
         self.slide_pixmap = pixmap

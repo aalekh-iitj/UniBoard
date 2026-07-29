@@ -6,10 +6,34 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
+from PySide6.QtWidgets import QGraphicsScene
 
 import config
 from core.pdf_handler import PdfHandler
 from ui.ppt_canvas import PptCanvasView, _BTN_PRIMARY, _BTN_SUBTLE, _NAV_LABEL
+
+
+_ZOOM_BTN_STYLE = """
+    QPushButton {
+        background: rgba(40, 40, 60, 0.8);
+        color: #c4c4d8;
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        border-radius: 8px;
+        font-size: 15px;
+        min-width: 38px;
+        max-width: 38px;
+        min-height: 34px;
+        max-height: 34px;
+    }
+    QPushButton:hover {
+        background: rgba(60, 60, 85, 0.9);
+        color: #e2e8f0;
+        border: 1px solid rgba(99, 102, 241, 0.35);
+    }
+    QPushButton:pressed {
+        background: rgba(30, 30, 50, 1.0);
+    }
+"""
 
 
 class PdfCanvasWidget(QWidget):
@@ -170,6 +194,33 @@ class PdfCanvasWidget(QWidget):
         """)
         self.page_spin.valueChanged.connect(self.go_to_page)
         nav_layout.addWidget(self.page_spin)
+
+        nav_layout.addStretch()
+
+        self.zoom_out_btn = QPushButton("−")
+        self.zoom_out_btn.setStyleSheet(_ZOOM_BTN_STYLE)
+        self.zoom_out_btn.setCursor(Qt.PointingHandCursor)
+        self.zoom_out_btn.setToolTip("Zoom out")
+        self.zoom_out_btn.clicked.connect(self.zoom_out)
+        nav_layout.addWidget(self.zoom_out_btn)
+
+        self.zoom_level_label = QLabel("100%")
+        self.zoom_level_label.setStyleSheet("color: #c4c4d8; font-size: 13px; min-width: 48px; text-align: center;")
+        nav_layout.addWidget(self.zoom_level_label)
+
+        self.zoom_in_btn = QPushButton("+")
+        self.zoom_in_btn.setStyleSheet(_ZOOM_BTN_STYLE)
+        self.zoom_in_btn.setCursor(Qt.PointingHandCursor)
+        self.zoom_in_btn.setToolTip("Zoom in")
+        self.zoom_in_btn.clicked.connect(self.zoom_in)
+        nav_layout.addWidget(self.zoom_in_btn)
+
+        self.reset_zoom_btn = QPushButton("⌂")
+        self.reset_zoom_btn.setStyleSheet(_ZOOM_BTN_STYLE)
+        self.reset_zoom_btn.setCursor(Qt.PointingHandCursor)
+        self.reset_zoom_btn.setToolTip("Reset zoom")
+        self.reset_zoom_btn.clicked.connect(self.reset_zoom)
+        nav_layout.addWidget(self.reset_zoom_btn)
 
         root.addWidget(nav_bar)
 
@@ -368,3 +419,29 @@ class PdfCanvasWidget(QWidget):
 
     def redo(self):
         self.page_view.redo()
+
+    # ------------------------------------------------------------------
+    # Zoom
+    # ------------------------------------------------------------------
+    _zoom_step = 0.25
+    _min_zoom = 0.5
+    _max_zoom = 4.0
+
+    def zoom_in(self):
+        current = self.page_view.zoom
+        new_zoom = min(current + self._zoom_step, self._max_zoom)
+        self.page_view.set_zoom(new_zoom)
+        self._update_zoom_label(new_zoom)
+
+    def zoom_out(self):
+        current = self.page_view.zoom
+        new_zoom = max(current - self._zoom_step, self._min_zoom)
+        self.page_view.set_zoom(new_zoom)
+        self._update_zoom_label(new_zoom)
+
+    def reset_zoom(self):
+        self.page_view.set_zoom(1.0)
+        self._update_zoom_label(1.0)
+
+    def _update_zoom_label(self, zoom_factor: float):
+        self.zoom_level_label.setText(f"{int(zoom_factor * 100)}%")

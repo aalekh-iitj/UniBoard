@@ -831,6 +831,16 @@ class BrowserWidget(QWidget):
             }
         """
 
+        # — Content area: web view + annotation overlay —
+        self._content_frame = QFrame(self)
+        content_layout = QVBoxLayout(self._content_frame)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+
+        self._web = QWebEngineView(self._content_frame)
+        self._web.setUrl(QUrl(initial_url))
+        content_layout.addWidget(self._web)
+
         self._back_btn = QPushButton("◀")
         self._back_btn.setStyleSheet(nav_btn_style)
         self._back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -885,16 +895,6 @@ class BrowserWidget(QWidget):
 
         root.addWidget(nav)
 
-        # — Content area: web view + annotation overlay —
-        self._content_frame = QFrame(self)
-        content_layout = QVBoxLayout(self._content_frame)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(0)
-
-        self._web = QWebEngineView(self._content_frame)
-        self._web.setUrl(QUrl(initial_url))
-        content_layout.addWidget(self._web)
-
         # Transparent annotation overlay on top of the web view.
         self._annot_overlay = PptCanvasView(self._content_frame)
         self._annot_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
@@ -904,8 +904,6 @@ class BrowserWidget(QWidget):
         self._annot_overlay.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._annot_overlay.setVisible(True)
         self._annot_overlay.lower()
-
-        root.addWidget(self._content_frame, 1)
 
     # ------------------------------------------------------------------
     # Theme hook
