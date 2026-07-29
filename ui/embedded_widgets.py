@@ -408,19 +408,35 @@ class CompilerRunThread(QThread):
 
 
 class CompilerWidget(QWidget):
-    """Code editor + console output with background compilation."""
+    """Code editor + console output + annotation overlay.
+
+    The code editor and console sit in a splitter. On top of the splitter
+    is a transparent ``PptCanvasView`` annotation overlay so the educator
+    can draw over their code and output with the main toolbar's pen /
+    highlighter / eraser / shapes / text tools. The overlay is hidden from
+    mouse events whenever the Select tool is active so the user can still
+    type in the editor normally.
+    """
 
     code_changed = Signal(str, str)  # (code, language)
+    annotations_changed = Signal(list)   # list of QGraphicsItem objects
 
     def __init__(
         self,
         initial_code: str = "",
         initial_lang: str = "Python",
+        saved_annotations: list | None = None,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self._thread: CompilerRunThread | None = None
         self._build_ui(initial_code, initial_lang)
+        # Restore any previously saved annotations.
+        if saved_annotations:
+            self._annot_overlay.load_annotation_items(saved_annotations)
+        # Whenever the user draws on the overlay, hand the items up to the
+        # main window so it can stash them in the page meta.
+        self._annot_overlay.stroke_drawn.connect(self._on_annotations_changed)
 
     def set_theme(self, theme_name: str):
         """Update styles to match the selected theme."""
@@ -438,8 +454,10 @@ class CompilerWidget(QWidget):
 
         # — Toolbar —
         toolbar = QFrame(self)
+        toolbar.setObjectName("compilerToolbar")
         toolbar.setStyleSheet(
-            f"QFrame {{ {_DARK_GLASS_BG} border-bottom: 1px solid rgba(99,102,241,0.15); }}"
+            f"QFrame#compilerToolbar {{ {_DARK_GLASS_BG} "
+            f"border-bottom: 1px solid rgba(99,102,241,0.15); }}"
         )
         tb_layout = QHBoxLayout(toolbar)
         tb_layout.setContentsMargins(14, 10, 14, 10)
@@ -455,6 +473,22 @@ class CompilerWidget(QWidget):
 
         tb_layout.addStretch()
 
+        # Snapshot button (saves the current annotated view as PNG)
+        self._snap_btn = QPushButton("📸")
+        self._snap_btn.setStyleSheet(_SUBTLE_BTN)
+        self._snap_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._snap_btn.setToolTip("Save annotated snapshot (PNG)")
+        self._snap_btn.clicked.connect(self._save_snapshot)
+        tb_layout.addWidget(self._snap_btn)
+
+        # Clear annotations button
+        self._clear_annot_btn = QPushButton("🧹")
+        self._clear_annot_btn.setStyleSheet(_SUBTLE_BTN)
+        self._clear_annot_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._clear_annot_btn.setToolTip("Clear annotations")
+        self._clear_annot_btn.clicked.connect(self._clear_annotations)
+        tb_layout.addWidget(self._clear_annot_btn)
+
         # Run button
         self._run_btn = QPushButton("⚡  Run Code")
         self._run_btn.setStyleSheet(_GREEN_BTN)
@@ -464,8 +498,14 @@ class CompilerWidget(QWidget):
 
         root.addWidget(toolbar)
 
-        # — Splitter: editor | console —
-        self._splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        # — Content area: editor + console + annotation overlay —
+        self._content_frame = QFrame(self)
+        content_layout = QVBoxLayout(self._content_frame)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+
+        # Splitter: editor | console
+        self._splitter = QSplitter(Qt.Orientation.Horizontal, self._content_frame)
         self._splitter.setStyleSheet(_SPLITTER_STYLE)
         self._splitter.setHandleWidth(3)
 
@@ -489,7 +529,39 @@ class CompilerWidget(QWidget):
 
         self._splitter.setStretchFactor(0, 3)
         self._splitter.setStretchFactor(1, 2)
-        root.addWidget(self._splitter, 1)
+        content_layout.addWidget(self._splitter, 1)
+
+        # Annotation overlay on top of the editor + console
+        self._annot_overlay = PptCanvasView(self._content_frame)
+        self._annot_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._annot_overlay.setBackgroundBrush(QColor(0, 0, 0, 0))
+        self._annot_overlay.setStyleSheet("background: transparent; border: none;")
+        self._annot_overlay.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._annot_overlay.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._annot_overlay.setVisible(True)
+        self._annot_overlay.lower()
+
+        root.addWidget(self._content_frame, 1)
+
+    # -- Layout / overlay geometry -------------------------------------------
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_annot_overlay()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._update_annot_overlay()
+
+    def _update_annot_overlay(self) -> None:
+        if not self._splitter or not self._annot_overlay:
+            return
+        geom = self._splitter.geometry()
+        self._annot_overlay.setGeometry(geom)
+        w, h = geom.width(), geom.height()
+        if w > 0 and h > 0:
+            scene = self._annot_overlay.scene()
+            scene.setSceneRect(0, 0, w, h)
+            self._annot_overlay.resetTransform()
 
     # -- Slots ---------------------------------------------------------------
 
@@ -545,383 +617,193 @@ class CompilerWidget(QWidget):
         if idx >= 0:
             self._lang_combo.setCurrentIndex(idx)
 
-    # -- Drawing-tool compatibility properties (no-ops) -----------------------
-    # The compiler is a code editor; it doesn't use drawing tools.
-    # These properties exist so the main toolbar can call them without crashing.
+    # -- Annotations ---------------------------------------------------------
+    def _on_annotations_changed(self) -> None:
+        try:
+            items = self._annot_overlay.get_annotation_items()
+            self.annotations_changed.emit(items)
+        except Exception:
+            pass
+
+    def save_annotations(self) -> list:
+        """Detach annotation items from the scene and return them so the
+        caller can stash them in the page meta.  Call this *before* the
+        widget is destroyed so the items survive.
+        """
+        items = self._annot_overlay.get_annotation_items()
+        for item in items:
+            self._annot_overlay.scene().removeItem(item)
+        return items
+
+    def load_annotations(self, items: list) -> None:
+        if not items:
+            return
+        self._annot_overlay.load_annotation_items(items)
+
+    def _clear_annotations(self) -> None:
+        self._annot_overlay.clear_annotations()
+        self._on_annotations_changed()
+
+    def _save_snapshot(self) -> None:
+        """Grab a PNG of the editor + console + annotation overlay and save it."""
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+        from PySide6.QtCore import QStandardPaths
+        from PySide6.QtGui import QPainter
+        import os
+
+        try:
+            overlay_pix = self._annot_overlay.grab()
+            content_pix = self._splitter.grab()
+            combined = QPixmap(content_pix.size())
+            combined.fill(QColor(0, 0, 0, 0))
+            p = QPainter(combined)
+            p.drawPixmap(0, 0, content_pix)
+            p.drawPixmap(0, 0, overlay_pix)
+            p.end()
+
+            default_dir = QStandardPaths.writableLocation(
+                QStandardPaths.StandardLocation.DocumentsLocation
+            ) or os.path.expanduser("~")
+            file_path, _ = QFileDialog.getSaveFileName(
+                self, "Save annotated snapshot",
+                os.path.join(default_dir, "compiler_snapshot.png"),
+                "PNG Images (*.png)",
+            )
+            if not file_path:
+                return
+            if not file_path.lower().endswith(".png"):
+                file_path += ".png"
+            if combined.save(file_path, "PNG"):
+                QMessageBox.information(
+                    self, "Snapshot saved",
+                    f"Annotated snapshot saved to:\n{file_path}",
+                )
+            else:
+                QMessageBox.critical(self, "Save failed", "Could not save the snapshot.")
+        except Exception as e:
+            QMessageBox.critical(self, "Save failed", f"Error saving snapshot:\n{e}")
+
+    # -- Drawing-tool API (proxied to the annotation overlay) ----------------
+    def set_tool(self, tool_mode) -> None:
+        is_drawing = tool_mode != 0  # MODE_SELECT = 0
+        self._annot_overlay.set_tool(tool_mode)
+        self._annot_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, not is_drawing)
+        if is_drawing:
+            self._annot_overlay.raise_()
+            self._update_annot_overlay()
+        else:
+            self._annot_overlay.lower()
 
     @property
     def pen_color(self):
-        return QColor("#00ffcc")
+        return self._annot_overlay.pen_color
 
     @pen_color.setter
-    def pen_color(self, value):
-        pass
+    def pen_color(self, color):
+        self._annot_overlay.pen_color = color
+        self._annot_overlay.highlighter_color = QColor(
+            color.red(), color.green(), color.blue(), 100
+        )
 
     @property
     def pen_width(self):
-        return 3
+        return self._annot_overlay.pen_width
 
     @pen_width.setter
-    def pen_width(self, value):
-        pass
+    def pen_width(self, width):
+        self._annot_overlay.pen_width = width
+        self._annot_overlay.highlighter_width = max(width * 4, 8)
+        self._annot_overlay.eraser_width = max(width * 5, 10)
 
     @property
     def text_size(self):
-        return 16
+        return self._annot_overlay.text_size
 
     @text_size.setter
-    def text_size(self, value):
-        pass
+    def text_size(self, size):
+        self._annot_overlay.text_size = size
 
     @property
     def highlighter_color(self):
-        return QColor(255, 255, 0, 100)
+        return self._annot_overlay.highlighter_color
 
     @highlighter_color.setter
-    def highlighter_color(self, value):
-        pass
+    def highlighter_color(self, color):
+        self._annot_overlay.highlighter_color = color
 
     @property
     def highlighter_width(self):
-        return 15
+        return self._annot_overlay.highlighter_width
 
     @highlighter_width.setter
-    def highlighter_width(self, value):
-        pass
+    def highlighter_width(self, width):
+        self._annot_overlay.highlighter_width = width
 
     @property
     def eraser_width(self):
-        return 24
+        return self._annot_overlay.eraser_width
 
     @eraser_width.setter
-    def eraser_width(self, value):
-        pass
-
-    def set_tool(self, tool_mode):
-        pass
+    def eraser_width(self, width):
+        self._annot_overlay.eraser_width = width
 
     def undo(self):
-        pass
+        self._annot_overlay.undo()
 
     def redo(self):
-        pass
+        self._annot_overlay.redo()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  3. HtmlCanvasWidget  (HTML5 <canvas>-based drawing tool, Browser pattern)
+#  3. BrowserWidget  (real web browser + annotation overlay + snapshot)
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Self-contained HTML5 page that renders an interactive <canvas> surface.
-# It exposes a small JS API (setTool, setColor, setWidth, clearCanvas,
-# loadCanvas, getCanvasDataURL) and talks back to Python through a
-# QWebChannel bridge named "bridge".
-_HTML5_CANVAS_PAGE = r"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>HTML5 Canvas</title>
-<style>
-  html, body {
-    margin: 0; padding: 0; height: 100%; width: 100%;
-    background: #0d0d11; overflow: hidden;
-    font-family: 'Segoe UI', system-ui, sans-serif;
-  }
-  #canvas {
-    display: block; cursor: crosshair;
-    background: #0d0d11;
-    touch-action: none;
-  }
-  #statusBar {
-    position: fixed; left: 12px; bottom: 10px;
-    color: #6366f1; font-size: 12px; font-weight: 500;
-    background: rgba(20, 20, 38, 0.65);
-    border: 1px solid rgba(99, 102, 241, 0.25);
-    border-radius: 6px;
-    padding: 4px 10px;
-    pointer-events: none;
-    user-select: none;
-  }
-</style>
-<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
-</head>
-<body>
-<canvas id="canvas"></canvas>
-<div id="statusBar">HTML5 Canvas — ready</div>
-<script>
-(function () {
-  'use strict';
+class BrowserWidget(QWidget):
+    """Real embedded web browser with a transparent annotation overlay.
 
-  const canvas = document.getElementById('canvas');
-  const ctx = canvas.getContext('2d');
-  const statusBar = document.getElementById('statusBar');
+    Layout:
+        [ ◀ Back ] [ ▶ Forward ] [ 🔄 Reload ]   [   URL bar …   ] [ Go ] [ 📸 ]
 
-  // Persistent state for the canvas
-  let tool = 'pen';
-  let color = '#00ffcc';
-  let width = 3;
-  let isDrawing = false;
-  let lastX = 0, lastY = 0;
-  let bridge = null;
-  let suppressSave = false;  // when true, don't push a snapshot (e.g. during load)
-
-  function setStatus(text) { if (statusBar) statusBar.textContent = text; }
-
-  function resizeCanvas() {
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    if (canvas.width === w && canvas.height === h) return;
-    // Preserve the current drawing across resizes.
-    const snapshot = canvas.toDataURL();
-    canvas.width = w;
-    canvas.height = h;
-    if (snapshot && snapshot.length > 100) {
-      const img = new Image();
-      img.onload = function () { ctx.drawImage(img, 0, 0); };
-      img.src = snapshot;
-    }
-  }
-
-  function getPos(e) {
-    const r = canvas.getBoundingClientRect();
-    const t = (e.touches && e.touches.length) ? e.touches[0] : e;
-    return [t.clientX - r.left, t.clientY - r.top];
-  }
-
-  function strokeSettings() {
-    if (tool === 'eraser') {
-      return {
-        style: '#0d0d11',
-        lineWidth: Math.max(width * 4, 12)
-      };
-    }
-    if (tool === 'highlighter') {
-      // Parse hex (#rrggbb) into rgba with low alpha
-      let c = color;
-      if (c.startsWith('#') && c.length === 7) {
-        const r = parseInt(c.substr(1, 2), 16);
-        const g = parseInt(c.substr(3, 2), 16);
-        const b = parseInt(c.substr(5, 2), 16);
-        c = 'rgba(' + r + ',' + g + ',' + b + ',0.35)';
-      }
-      return { style: c, lineWidth: Math.max(width * 4, 12) };
-    }
-    return { style: color, lineWidth: width };
-  }
-
-  function startDraw(e) {
-    e.preventDefault();
-    isDrawing = true;
-    const p = getPos(e);
-    lastX = p[0]; lastY = p[1];
-  }
-
-  function continueDraw(e) {
-    if (!isDrawing) return;
-    e.preventDefault();
-    const p = getPos(e);
-    const s = strokeSettings();
-    ctx.save();
-    ctx.strokeStyle = s.style;
-    ctx.lineWidth = s.lineWidth;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.beginPath();
-    ctx.moveTo(lastX, lastY);
-    ctx.lineTo(p[0], p[1]);
-    ctx.stroke();
-    ctx.restore();
-    lastX = p[0]; lastY = p[1];
-  }
-
-  function endDraw() {
-    if (!isDrawing) return;
-    isDrawing = false;
-    if (bridge && !suppressSave) {
-      try { bridge.saveCanvas(canvas.toDataURL()); } catch (e) {}
-    }
-  }
-
-  // ---- Public API (called from Python via runJavaScript) ------------------
-
-  window.setTool = function (t) {
-    tool = String(t || 'pen');
-    setStatus('Tool: ' + tool);
-  };
-  window.setColor = function (c) {
-    color = String(c || '#00ffcc');
-    setStatus('Color: ' + color);
-  };
-  window.setWidth = function (w) {
-    width = Math.max(1, parseInt(w, 10) || 3);
-    setStatus('Width: ' + width);
-  };
-  window.clearCanvas = function () {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    if (bridge) {
-      try { bridge.saveCanvas(canvas.toDataURL()); } catch (e) {}
-    }
-  };
-  window.loadCanvas = function (dataUrl) {
-    if (!dataUrl) {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      return;
-    }
-    const img = new Image();
-    img.onload = function () {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(img, 0, 0);
-    };
-    img.onerror = function () {
-      // Bad data URL — silently ignore.
-    };
-    img.src = dataUrl;
-  };
-  window.getCanvasDataURL = function () {
-    return canvas.toDataURL();
-  };
-  window.applySnapshot = function (dataUrl) {
-    // Used by the "Go" / Save button — keeps the canvas as-is and just
-    // pushes a new history entry for the current state.
-    if (bridge) {
-      try { bridge.saveCanvas(dataUrl || canvas.toDataURL()); } catch (e) {}
-    }
-  };
-
-  // ---- Event wiring -------------------------------------------------------
-
-  canvas.addEventListener('mousedown', startDraw);
-  canvas.addEventListener('mousemove', continueDraw);
-  canvas.addEventListener('mouseup', endDraw);
-  canvas.addEventListener('mouseleave', endDraw);
-  canvas.addEventListener('touchstart', startDraw, { passive: false });
-  canvas.addEventListener('touchmove', continueDraw, { passive: false });
-  canvas.addEventListener('touchend', endDraw);
-  window.addEventListener('resize', resizeCanvas);
-
-  // ---- QWebChannel bootstrap ---------------------------------------------
-  if (typeof QWebChannel !== 'undefined') {
-    new QWebChannel(qt.webChannelTransport, function (channel) {
-      bridge = channel.objects.bridge;
-      // Tell Python we're ready (it will push initial state if any).
-      if (bridge && bridge.notifyReady) {
-        try { bridge.notifyReady(); } catch (e) {}
-      }
-    });
-  } else {
-    setStatus('QWebChannel not available');
-  }
-
-  resizeCanvas();
-})();
-</script>
-</body>
-</html>
-"""
-
-
-class HtmlCanvasBridge(QObject):
-    """Bridge object exposed to the HTML5 <canvas> JavaScript via QWebChannel.
-
-    Python → JS is done with ``runJavaScript()``; JS → Python is done through
-    the ``@Slot`` methods on this object. We also expose a couple of
-    properties (color, width, tool) so the JS side can read them if needed.
+    Underneath sits a ``QWebEngineView`` that loads the live web page.
+    On top of it sits a transparent ``PptCanvasView`` annotation overlay
+    that the educator can draw on with the main toolbar's pen / highlighter
+    / eraser / shapes / text tools. The overlay is hidden from mouse events
+    whenever the Select tool is active so the user can still click links,
+    scroll, and interact with the page normally.
     """
 
-    # JS → Python signals
-    canvas_saved = Signal(str)         # data URL of the canvas state
-    ready = Signal()                   # JS side finished bootstrapping
-
-    def __init__(self, parent: QObject | None = None) -> None:
-        super().__init__(parent)
-        self._color = "#00ffcc"
-        self._width = 3
-        self._tool = "pen"
-
-    # -- Properties (read-only from JS side) --------------------------------
-
-    @Property(str)
-    def color(self) -> str:
-        return self._color
-
-    @Property(int)
-    def width(self) -> int:
-        return self._width
-
-    @Property(str)
-    def tool(self) -> str:
-        return self._tool
-
-    # -- Slots (JS → Python) ------------------------------------------------
-
-    @Slot(str)
-    def saveCanvas(self, data_url: str) -> None:
-        self.canvas_saved.emit(data_url)
-
-    @Slot()
-    def notifyReady(self) -> None:
-        self.ready.emit()
-
-
-class Html5CanvasWidget(QWidget):
-    """Browser-pattern widget whose main content is an HTML5 <canvas>.
-
-    Header layout mirrors the old BrowserWidget:
-        [ ⬅ Undo ] [ ➡ Redo ] [ 🔄 Clear ]   [   canvas title …   ] [ Save ]
-
-    The "URL bar" doubles as a canvas title (purely metadata, free-form text).
-    The main area is a ``QWebEngineView`` hosting an HTML5 page that draws
-    onto a real ``<canvas>`` element with the pen / eraser / highlighter
-    tools. State is synced to the page through ``runJavaScript`` and
-    received back as a data URL via the ``HtmlCanvasBridge``.
-    """
-
-    canvas_changed = Signal(str)   # data URL of the latest canvas state
-    title_changed = Signal(str)    # canvas title (the "URL bar" text)
-
-    _MAX_HISTORY = 30              # undo / redo depth cap
+    url_changed = Signal(str)
+    annotations_changed = Signal(list)   # list of QGraphicsItem objects (for page meta)
 
     def __init__(
         self,
-        initial_state: str = "",
-        initial_title: str = "",
+        initial_url: str = "https://www.google.com",
+        saved_annotations: list | None = None,
         parent: QWidget | None = None,
-    ) -> None:
+    ):
         super().__init__(parent)
-        self._bridge = HtmlCanvasBridge(self)
-        self._undo_stack: list[str] = []
-        self._redo_stack: list[str] = []
-        self._current_state: str = initial_state or ""
-        self._title: str = initial_title or ""
-        self._js_ready: bool = False
-        self._pending_state: str = initial_state or ""
-        self._suppress_history: bool = False
-
-        self._build_ui()
-
-        # Bridge wiring
-        self._bridge.canvas_saved.connect(self._on_canvas_saved)
-        self._bridge.ready.connect(self._on_js_ready)
-        self._channel = QWebChannel(self)
-        self._channel.registerObject("bridge", self._bridge)
-        self._web.page().setWebChannel(self._channel)
-        self._web.loadFinished.connect(self._on_load_finished)
-
-        # Load the HTML5 canvas page (qrc:/ lets us resolve the
-        # qwebchannel.js script shipped with Qt).
-        self._web.setHtml(_HTML5_CANVAS_PAGE, QUrl("qrc:///"))
+        self._build_ui(initial_url)
+        self._web.urlChanged.connect(self._on_url_loaded)
+        # Whenever the user draws on the overlay, persist to the page meta.
+        self._annot_overlay.stroke_drawn.connect(self._on_annotations_changed)
+        # Restore previously saved annotations (if any).
+        if saved_annotations:
+            self._annot_overlay.load_annotation_items(saved_annotations)
 
     # ------------------------------------------------------------------
     # UI
     # ------------------------------------------------------------------
-    def _build_ui(self) -> None:
+    def _build_ui(self, initial_url: str) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # — Navigation bar (mirrors old BrowserWidget chrome) —
+        # — Navigation bar —
         nav = QFrame(self)
+        nav.setObjectName("browserNavBar")
         nav.setStyleSheet(
-            f"QFrame {{ {_DARK_GLASS_BG} border-bottom: 1px solid rgba(99,102,241,0.15); }}"
+            f"QFrame#browserNavBar {{ {_DARK_GLASS_BG} "
+            f"border-bottom: 1px solid rgba(99,102,241,0.15); }}"
         )
         nav_layout = QHBoxLayout(nav)
         nav_layout.setContentsMargins(10, 8, 10, 8)
@@ -949,300 +831,271 @@ class Html5CanvasWidget(QWidget):
             }
         """
 
-        self._back_btn = QPushButton("⬅")
+        self._back_btn = QPushButton("◀")
         self._back_btn.setStyleSheet(nav_btn_style)
         self._back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._back_btn.setToolTip("Undo last stroke")
-        self._back_btn.clicked.connect(self._undo)
+        self._back_btn.setToolTip("Back")
+        self._back_btn.clicked.connect(self._web.back)
         nav_layout.addWidget(self._back_btn)
 
-        self._fwd_btn = QPushButton("➡")
+        self._fwd_btn = QPushButton("▶")
         self._fwd_btn.setStyleSheet(nav_btn_style)
         self._fwd_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._fwd_btn.setToolTip("Redo stroke")
-        self._fwd_btn.clicked.connect(self._redo)
+        self._fwd_btn.setToolTip("Forward")
+        self._fwd_btn.clicked.connect(self._web.forward)
         nav_layout.addWidget(self._fwd_btn)
 
-        self._reload_btn = QPushButton("🧹")
+        self._reload_btn = QPushButton("🔄")
         self._reload_btn.setStyleSheet(nav_btn_style)
         self._reload_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._reload_btn.setToolTip("Clear canvas")
-        self._reload_btn.clicked.connect(self._clear)
+        self._reload_btn.setToolTip("Reload page")
+        self._reload_btn.clicked.connect(self._web.reload)
         nav_layout.addWidget(self._reload_btn)
 
-        # "URL" bar — repurposed as a canvas title input
+        # URL bar
         self._url_bar = QLineEdit()
         self._url_bar.setStyleSheet(_LINE_EDIT_STYLE)
-        self._url_bar.setPlaceholderText("Canvas title…")
-        self._url_bar.setText(self._title)
-        self._url_bar.returnPressed.connect(self._on_title_entered)
+        self._url_bar.setPlaceholderText("Enter URL…")
+        self._url_bar.setText(initial_url)
+        self._url_bar.returnPressed.connect(self.load_url)
         nav_layout.addWidget(self._url_bar, 1)
 
-        # "Go" → Save snapshot
-        self._go_btn = QPushButton("Save")
+        # Go button
+        self._go_btn = QPushButton("Go")
         self._go_btn.setStyleSheet(_ACCENT_BTN)
         self._go_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._go_btn.setToolTip("Save current canvas snapshot")
-        self._go_btn.clicked.connect(self._save_snapshot)
+        self._go_btn.clicked.connect(self.load_url)
         nav_layout.addWidget(self._go_btn)
+
+        # Snapshot button (saves the current annotated view as PNG)
+        self._snap_btn = QPushButton("📸")
+        self._snap_btn.setStyleSheet(nav_btn_style)
+        self._snap_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._snap_btn.setToolTip("Save annotated snapshot (PNG)")
+        self._snap_btn.clicked.connect(self._save_snapshot)
+        nav_layout.addWidget(self._snap_btn)
+
+        # Clear annotations button
+        self._clear_annot_btn = QPushButton("🧹")
+        self._clear_annot_btn.setStyleSheet(nav_btn_style)
+        self._clear_annot_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._clear_annot_btn.setToolTip("Clear annotations")
+        self._clear_annot_btn.clicked.connect(self._clear_annotations)
+        nav_layout.addWidget(self._clear_annot_btn)
 
         root.addWidget(nav)
 
-        # — HTML5 <canvas> surface —
-        self._web = QWebEngineView(self)
-        root.addWidget(self._web, 1)
+        # — Content area: web view + annotation overlay —
+        self._content_frame = QFrame(self)
+        content_layout = QVBoxLayout(self._content_frame)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+
+        self._web = QWebEngineView(self._content_frame)
+        self._web.setUrl(QUrl(initial_url))
+        content_layout.addWidget(self._web)
+
+        # Transparent annotation overlay on top of the web view.
+        self._annot_overlay = PptCanvasView(self._content_frame)
+        self._annot_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._annot_overlay.setBackgroundBrush(QColor(0, 0, 0, 0))
+        self._annot_overlay.setStyleSheet("background: transparent; border: none;")
+        self._annot_overlay.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._annot_overlay.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._annot_overlay.setVisible(True)
+        self._annot_overlay.lower()
+
+        root.addWidget(self._content_frame, 1)
 
     # ------------------------------------------------------------------
-    # Theme hook (kept for API parity with the other embedded widgets)
+    # Theme hook
     # ------------------------------------------------------------------
     def set_theme(self, theme_name: str) -> None:
-        """Theme changes are picked up automatically via the QSS; this hook
-        exists so the main window can call it without checking capability.
-        """
+        # Nav bar is themed via the global stylesheet; nothing per-widget to do.
         return
 
     # ------------------------------------------------------------------
-    # JS bridge helpers
+    # Layout / overlay geometry
     # ------------------------------------------------------------------
-    def _run_js(self, code: str) -> None:
-        if self._web and self._web.page():
-            self._web.page().runJavaScript(code)
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_annot_overlay()
 
-    def _sync_tool_state(self) -> None:
-        """Push the current tool / color / width from Python to JS."""
-        self._run_js(f"setTool({json.dumps(self._bridge._tool)});")
-        self._run_js(f"setColor({json.dumps(self._bridge._color)});")
-        self._run_js(f"setWidth({int(self._bridge._width)});")
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._update_annot_overlay()
 
-    def _on_load_finished(self, ok: bool) -> None:
-        if not ok:
+    def _update_annot_overlay(self) -> None:
+        if not self._web or not self._annot_overlay:
             return
-        # The page itself wires up QWebChannel; we just wait for the
-        # ``ready`` signal before pushing initial state.
-
-    def _on_js_ready(self) -> None:
-        self._js_ready = True
-        self._sync_tool_state()
-        if self._pending_state:
-            self._suppress_history = True
-            try:
-                self._run_js(f"loadCanvas({json.dumps(self._pending_state)});")
-            finally:
-                self._suppress_history = False
-            # Seed the history with the loaded state so undo/redo has a
-            # sensible starting point.
-            self._undo_stack.append(self._pending_state)
-            self._current_state = self._pending_state
-            self._pending_state = ""
+        geom = self._web.geometry()
+        self._annot_overlay.setGeometry(geom)
+        w, h = geom.width(), geom.height()
+        if w > 0 and h > 0:
+            scene = self._annot_overlay.scene()
+            scene.setSceneRect(0, 0, w, h)
+            self._annot_overlay.resetTransform()
 
     # ------------------------------------------------------------------
-    # Slots: stroke → history
+    # Navigation
     # ------------------------------------------------------------------
-    def _on_canvas_saved(self, data_url: str) -> None:
-        if self._suppress_history:
+    def load_url(self) -> None:
+        url = self._url_bar.text().strip()
+        if not url:
             return
-        # Avoid duplicate consecutive entries (e.g. when reloading a
-        # snapshot that matches the current state).
-        if self._undo_stack and self._undo_stack[-1] == data_url:
-            self._current_state = data_url
-            return
-        self._undo_stack.append(data_url)
-        if len(self._undo_stack) > self._MAX_HISTORY:
-            self._undo_stack.pop(0)
-        self._redo_stack.clear()
-        self._current_state = data_url
-        self.canvas_changed.emit(data_url)
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        self._url_bar.setText(url)
+        self._web.setUrl(QUrl(url))
+
+    def _on_url_loaded(self, qurl: QUrl) -> None:
+        url_str = qurl.toString()
+        self._url_bar.setText(url_str)
+        self.url_changed.emit(url_str)
 
     # ------------------------------------------------------------------
-    # Nav-bar actions
+    # Annotations
     # ------------------------------------------------------------------
-    def _undo(self) -> None:
-        if len(self._undo_stack) <= 1:
-            return
-        self._redo_stack.append(self._undo_stack.pop())
-        state = self._undo_stack[-1]
-        self._current_state = state
-        self._suppress_history = True
+    def _on_annotations_changed(self) -> None:
+        # Hand the current annotation items up to the main window so it can
+        # stash them in the page meta.  Items stay in the scene here; the
+        # main window just keeps a reference for later restoration.
         try:
-            self._run_js(f"loadCanvas({json.dumps(state)});")
-        finally:
-            self._suppress_history = False
-        self.canvas_changed.emit(state)
+            items = self._annot_overlay.get_annotation_items()
+            self.annotations_changed.emit(items)
+        except Exception:
+            pass
 
-    def _redo(self) -> None:
-        if not self._redo_stack:
+    def save_annotations(self) -> list:
+        """Detach annotation items from the scene and return them so the
+        caller can stash them in the page meta.  Call this *before* the
+        widget is destroyed so the items survive.
+        """
+        items = self._annot_overlay.get_annotation_items()
+        for item in items:
+            self._annot_overlay.scene().removeItem(item)
+        return items
+
+    def load_annotations(self, items: list) -> None:
+        """Restore a previously saved set of annotation items."""
+        if not items:
             return
-        state = self._redo_stack.pop()
-        self._undo_stack.append(state)
-        self._current_state = state
-        self._suppress_history = True
-        try:
-            self._run_js(f"loadCanvas({json.dumps(state)});")
-        finally:
-            self._suppress_history = False
-        self.canvas_changed.emit(state)
+        self._annot_overlay.load_annotation_items(items)
 
-    def _clear(self) -> None:
-        self._suppress_history = True
-        try:
-            self._run_js("clearCanvas();")
-        finally:
-            self._suppress_history = False
-        # The JS side will emit a saveCanvas with the empty data URL
-        # which we want to record as a normal history step.
+    def _clear_annotations(self) -> None:
+        self._annot_overlay.clear_annotations()
+        self._on_annotations_changed()
 
     def _save_snapshot(self) -> None:
-        """Push a new history entry from the current canvas state and
-        give the user a quick visual confirmation.
-        """
-        self._run_js("applySnapshot('');")
-        # Briefly flash the button text as confirmation.
-        original = self._go_btn.text()
-        self._go_btn.setText("✓")
-        QTimer.singleShot(
-            800,
-            lambda: self._go_btn.setText(original) if self._go_btn else None,
-        )
+        """Grab a PNG of the web view + annotation overlay and save it."""
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+        from PySide6.QtCore import QStandardPaths
+        from PySide6.QtGui import QPainter, QPixmap as _QPixmap
+        import os
 
-    def _on_title_entered(self) -> None:
-        self._title = self._url_bar.text().strip()
-        self.title_changed.emit(self._title)
+        try:
+            overlay_pix = self._annot_overlay.grab()
+            web_pix = self._web.grab()
+            combined = _QPixmap(web_pix.size())
+            combined.fill(QColor(0, 0, 0, 0))
+            p = QPainter(combined)
+            p.drawPixmap(0, 0, web_pix)
+            p.drawPixmap(0, 0, overlay_pix)
+            p.end()
 
-    # ------------------------------------------------------------------
-    # Public API used by the main toolbar
-    # ------------------------------------------------------------------
-    # Integer tool-mode mapping (from `config`) → JS tool name.
-    _INT_TO_TOOL = {
-        0: "select",        # MODE_SELECT (no-op for the canvas)
-        1: "pen",           # MODE_PEN
-        2: "highlighter",   # MODE_HIGHLIGHTER
-        3: "eraser",        # MODE_ERASER
-        4: "text",          # MODE_TEXT (no-op for the canvas)
-        5: "line",          # MODE_LINE (no-op)
-        6: "rect",          # MODE_RECT (no-op)
-        7: "circle",        # MODE_CIRCLE (no-op)
-    }
-
-    def set_tool(self, tool) -> None:
-        """Switch the active drawing tool. Accepts either the integer
-        ``MODE_*`` constants from ``config`` or a JS tool name
-        (``'pen' | 'eraser' | 'highlighter' | 'select' | 'text'``).
-        """
-        if isinstance(tool, int):
-            tool = self._INT_TO_TOOL.get(tool, "pen")
-        if tool in ("select", "text", "line", "rect", "circle"):
-            # The HTML5 canvas only meaningfully supports pen/eraser/highlighter.
-            # Treat the rest as no-ops so the toolbar doesn't crash.
-            self._bridge._tool = "pen"
-            self._run_js(f"setTool({json.dumps('pen')});")
-            return
-        tool = str(tool or "pen")
-        self._bridge._tool = tool
-        self._run_js(f"setTool({json.dumps(tool)});")
-
-    def set_color(self, color) -> None:
-        # Accept QColor too — the main toolbar sometimes passes one.
-        c = color.name() if hasattr(color, "name") else str(color)
-        self._bridge._color = c
-        self._run_js(f"setColor({json.dumps(c)});")
-
-    def set_width(self, width: int) -> None:
-        width = max(1, int(width))
-        self._bridge._width = width
-        self._run_js(f"setWidth({width});")
+            default_dir = QStandardPaths.writableLocation(
+                QStandardPaths.StandardLocation.DocumentsLocation
+            ) or os.path.expanduser("~")
+            file_path, _ = QFileDialog.getSaveFileName(
+                self, "Save annotated snapshot",
+                os.path.join(default_dir, "browser_snapshot.png"),
+                "PNG Images (*.png)",
+            )
+            if not file_path:
+                return
+            if not file_path.lower().endswith(".png"):
+                file_path += ".png"
+            if combined.save(file_path, "PNG"):
+                QMessageBox.information(
+                    self, "Snapshot saved",
+                    f"Annotated snapshot saved to:\n{file_path}",
+                )
+            else:
+                QMessageBox.critical(self, "Save failed", "Could not save the snapshot.")
+        except Exception as e:
+            QMessageBox.critical(self, "Save failed", f"Error saving snapshot:\n{e}")
 
     # ------------------------------------------------------------------
-    # Attribute-style API for compatibility with the main toolbar
-    # (which uses ``target.pen_color = color`` etc. via _get_active_target).
+    # Drawing-tool API (proxied to the annotation overlay)
     # ------------------------------------------------------------------
+    def set_tool(self, tool_mode) -> None:
+        is_drawing = tool_mode != 0  # MODE_SELECT = 0
+        self._annot_overlay.set_tool(tool_mode)
+        self._annot_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, not is_drawing)
+        if is_drawing:
+            self._annot_overlay.raise_()
+            self._update_annot_overlay()
+        else:
+            self._annot_overlay.lower()
+
     @property
     def pen_color(self):
-        from PySide6.QtGui import QColor
-        return QColor(self._bridge._color)
+        return self._annot_overlay.pen_color
 
     @pen_color.setter
-    def pen_color(self, value):
-        self.set_color(value)
+    def pen_color(self, color):
+        self._annot_overlay.pen_color = color
+        self._annot_overlay.highlighter_color = QColor(
+            color.red(), color.green(), color.blue(), 100
+        )
 
     @property
-    def pen_width(self) -> int:
-        return self._bridge._width
+    def pen_width(self):
+        return self._annot_overlay.pen_width
 
     @pen_width.setter
-    def pen_width(self, value: int):
-        self.set_width(value)
+    def pen_width(self, width):
+        self._annot_overlay.pen_width = width
+        self._annot_overlay.highlighter_width = max(width * 4, 8)
+        self._annot_overlay.eraser_width = max(width * 5, 10)
 
-    # Attributes the main toolbar touches for the plain canvas — keep them
-    # as harmless no-ops so ``target.text_size = ...`` etc. don't crash.
     @property
-    def text_size(self) -> int:
-        return 16
+    def text_size(self):
+        return self._annot_overlay.text_size
 
     @text_size.setter
-    def text_size(self, value: int) -> None:
-        # Not applicable to the HTML5 canvas — silently accept.
-        return
+    def text_size(self, size):
+        self._annot_overlay.text_size = size
 
     @property
     def highlighter_color(self):
-        from PySide6.QtGui import QColor
-        return QColor(self._bridge._color)
+        return self._annot_overlay.highlighter_color
 
     @highlighter_color.setter
-    def highlighter_color(self, value) -> None:
-        return
+    def highlighter_color(self, color):
+        self._annot_overlay.highlighter_color = color
 
     @property
-    def highlighter_width(self) -> int:
-        return self._bridge._width
+    def highlighter_width(self):
+        return self._annot_overlay.highlighter_width
 
     @highlighter_width.setter
-    def highlighter_width(self, value: int) -> None:
-        return
+    def highlighter_width(self, width):
+        self._annot_overlay.highlighter_width = width
 
     @property
-    def eraser_width(self) -> int:
-        return self._bridge._width
+    def eraser_width(self):
+        return self._annot_overlay.eraser_width
 
     @eraser_width.setter
-    def eraser_width(self, value: int) -> None:
-        return
+    def eraser_width(self, width):
+        self._annot_overlay.eraser_width = width
 
-    def undo(self) -> None:
-        self._undo()
+    def undo(self):
+        self._annot_overlay.undo()
 
-    def redo(self) -> None:
-        self._redo()
-
-    def get_state(self) -> str:
-        """Return the latest canvas state (data URL)."""
-        return self._current_state
-
-    def set_state(self, data_url: str) -> None:
-        """Replace the canvas with a previously saved state."""
-        if not data_url:
-            return
-        self._current_state = data_url
-        if not self._js_ready:
-            # Page not bootstrapped yet — defer until ready.
-            self._pending_state = data_url
-            return
-        self._suppress_history = True
-        try:
-            self._run_js(f"loadCanvas({json.dumps(data_url)});")
-        finally:
-            self._suppress_history = False
-        # Reset history around the freshly loaded state.
-        self._undo_stack = [data_url]
-        self._redo_stack.clear()
-
-    def get_title(self) -> str:
-        return self._title
-
-    def set_title(self, title: str) -> None:
-        self._title = title or ""
-        if self._url_bar:
-            self._url_bar.setText(self._title)
+    def redo(self):
+        self._annot_overlay.redo()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1254,10 +1107,13 @@ class HtmlCanvasWidget(QWidget):
 
     html_changed = Signal(str)
 
-    def __init__(self, initial_html: str = "", parent: QWidget | None = None):
+    def __init__(self, initial_html: str = "", saved_annotations: list | None = None, parent: QWidget | None = None):
         super().__init__(parent)
         self.persistent = False
         self._build_ui(initial_html)
+        # Restore any previously saved annotations.
+        if saved_annotations:
+            self._annot_overlay.load_annotation_items(saved_annotations)
 
     def set_theme(self, theme_name: str):
         """Update styles to match the selected theme."""
@@ -1487,6 +1343,18 @@ class HtmlCanvasWidget(QWidget):
 
     def is_persistent(self):
         return self._persist_cb.isChecked()
+
+    # -- Annotation persistence (used by main_window on page switch) --------
+    def save_annotations(self) -> list:
+        items = self._annot_overlay.get_annotation_items()
+        for item in items:
+            self._annot_overlay.scene().removeItem(item)
+        return items
+
+    def load_annotations(self, items: list) -> None:
+        if not items:
+            return
+        self._annot_overlay.load_annotation_items(items)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -18,8 +18,11 @@ class PageNode:
             "html_code": "<!-- Paste HTML here -->\n<div style='background: linear-gradient(135deg, #8a2be2, #4a00e0); color: white; padding: 40px; border-radius: 12px; font-family: sans-serif; text-align: center;'>\n  <h2>UniBoard HTML Presentation</h2>\n  <p>Render presentation pages and annotate on top of them.</p>\n</div>",
             "compiled_code": "# Write python code here\nprint('Hello UniBoard compiler!')\n",
             "compiler_lang": "Python",
-            "canvas_state": "",   # data URL of the HTML5 canvas drawing
-            "canvas_title": "",   # user-supplied canvas title (the "URL bar" text)
+            "live_url": "https://www.google.com",
+            # Per-page annotation lists (QGraphicsItem objects, in-memory only).
+            "html_annotations": [],
+            "compiler_annotations": [],
+            "browser_annotations": [],
             "ppt_path": "",
             "pdf_path": ""
         }

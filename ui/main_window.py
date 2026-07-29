@@ -25,7 +25,7 @@ import config
 from core.page_manager import PageManager
 from ui.canvas import WhiteboardCanvas
 from ui.sidebar import SidebarWidget
-from ui.embedded_widgets import CompilerWidget, HtmlCanvasWidget, Html5CanvasWidget
+from ui.embedded_widgets import CompilerWidget, HtmlCanvasWidget, BrowserWidget
 from ui.ppt_canvas import PptCanvasWidget
 from ui.pdf_canvas import PdfCanvasWidget
 from ui.styles import Themes
@@ -585,7 +585,10 @@ class MainWindow(QMainWindow):
         self._cleanup_embedded()
 
         if mode == config.CANVAS_HTML:
-            self.embedded_html = HtmlCanvasWidget(page.meta.get("html_code", ""))
+            self.embedded_html = HtmlCanvasWidget(
+                page.meta.get("html_code", ""),
+                saved_annotations=page.meta.get("html_annotations"),
+            )
             self.embedded_html.html_changed.connect(
                 lambda html: page.meta.update({"html_code": html})
             )
@@ -596,25 +599,29 @@ class MainWindow(QMainWindow):
             self.embedded_compiler = CompilerWidget(
                 page.meta.get("compiled_code", ""),
                 page.meta.get("compiler_lang", "Python"),
+                saved_annotations=page.meta.get("compiler_annotations"),
             )
             self.embedded_compiler.code_changed.connect(
                 lambda code, lang: page.meta.update(
                     {"compiled_code": code, "compiler_lang": lang}
                 )
             )
+            self.embedded_compiler.annotations_changed.connect(
+                lambda items: page.meta.update({"compiler_annotations": items})
+            )
             self.stack.addWidget(self.embedded_compiler)
             self.stack.setCurrentWidget(self.embedded_compiler)
 
         elif mode == config.CANVAS_BROWSER:
-            self.embedded_browser = Html5CanvasWidget(
-                initial_state=page.meta.get("canvas_state", ""),
-                initial_title=page.meta.get("canvas_title", ""),
+            self.embedded_browser = BrowserWidget(
+                page.meta.get("live_url", "https://www.google.com"),
+                saved_annotations=page.meta.get("browser_annotations"),
             )
-            self.embedded_browser.canvas_changed.connect(
-                lambda data_url: page.meta.update({"canvas_state": data_url})
+            self.embedded_browser.url_changed.connect(
+                lambda url: page.meta.update({"live_url": url})
             )
-            self.embedded_browser.title_changed.connect(
-                lambda title: page.meta.update({"canvas_title": title})
+            self.embedded_browser.annotations_changed.connect(
+                lambda items: page.meta.update({"browser_annotations": items})
             )
             self.stack.addWidget(self.embedded_browser)
             self.stack.setCurrentWidget(self.embedded_browser)
@@ -654,9 +661,26 @@ class MainWindow(QMainWindow):
             pass
 
     def _cleanup_embedded(self):
+        # Per-attr annotation meta key so save_annotations() can stash items
+        # before the widget (and its scene) is destroyed.
+        annot_meta_key = {
+            "embedded_html": "html_annotations",
+            "embedded_compiler": "compiler_annotations",
+            "embedded_browser": "browser_annotations",
+        }
+        page = self.page_manager.active_page
         for attr in ("embedded_html", "embedded_compiler", "embedded_browser", "embedded_ppt", "embedded_pdf"):
             widget = getattr(self, attr, None)
             if widget:
+                # Stash any in-flight annotations back into the page meta
+                # so they survive across page switches / canvas-type toggles.
+                if page and attr in annot_meta_key and hasattr(widget, "save_annotations"):
+                    try:
+                        items = widget.save_annotations()
+                        if items is not None:
+                            page.meta[annot_meta_key[attr]] = items
+                    except Exception:
+                        pass
                 idx = self.stack.indexOf(widget)
                 if idx >= 0:
                     self.stack.removeWidget(widget)
