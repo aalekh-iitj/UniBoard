@@ -791,10 +791,17 @@ class MainWindow(QMainWindow):
             if scope == "Current Canvas":
                 self.stack.setCurrentWidget(self.canvas)
                 QApplication.processEvents()
-                pixmap = self.canvas.grab()
-                img_path = os.path.join(temp_dir, "current.png")
-                pixmap.save(img_path, "PNG")
-                image_paths.append(img_path)
+                scene = self.canvas.scene()
+                if scene:
+                    rect = scene.sceneRect()
+                    pixmap = QPixmap(int(rect.width()), int(rect.height()))
+                    pixmap.fill(Qt.transparent)
+                    painter = QPainter(pixmap)
+                    scene.render(painter, target=QRectF(pixmap.rect()), source=rect)
+                    painter.end()
+                    img_path = os.path.join(temp_dir, "current.png")
+                    pixmap.save(img_path, "PNG")
+                    image_paths.append(img_path)
             else:
                 for page in self.page_manager.root_pages:
                     old_type = page.meta.get("canvas_type", config.CANVAS_PLAIN)
@@ -802,10 +809,17 @@ class MainWindow(QMainWindow):
                     self.canvas.set_page_node(page)
                     self.stack.setCurrentWidget(self.canvas)
                     QApplication.processEvents()
-                    pixmap = self.canvas.grab()
-                    img_path = os.path.join(temp_dir, f"{page.id}.png")
-                    pixmap.save(img_path, "PNG")
-                    image_paths.append(img_path)
+                    scene = self.canvas.scene()
+                    if scene:
+                        rect = scene.sceneRect()
+                        pixmap = QPixmap(int(rect.width()), int(rect.height()))
+                        pixmap.fill(Qt.transparent)
+                        painter = QPainter(pixmap)
+                        scene.render(painter, target=QRectF(pixmap.rect()), source=rect)
+                        painter.end()
+                        img_path = os.path.join(temp_dir, f"{page.id}.png")
+                        pixmap.save(img_path, "PNG")
+                        image_paths.append(img_path)
                     page.meta["canvas_type"] = old_type
 
                 # Restore active page
@@ -899,6 +913,19 @@ class MainWindow(QMainWindow):
 
     def add_new_canvas(self):
         """Create a new blank page/canvas and switch to it."""
+        # Before switching, prompt to export the current canvas
+        reply = QMessageBox.question(
+            self,
+            "Save Current Canvas",
+            "Would you like to export the current canvas before creating a new one?",
+            QMessageBox.Save | QMessageBox.Skip | QMessageBox.Cancel,
+            QMessageBox.Save,
+        )
+        if reply == QMessageBox.Cancel:
+            return
+        if reply == QMessageBox.Save:
+            self.export_to_pdf()
+
         title, ok = QInputDialog.getText(
             self, "New Canvas", "Enter canvas title:"
         )
