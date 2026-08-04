@@ -75,6 +75,15 @@ class PptSlideRenderer:
 
         rect = QRectF(left_px, top_px, width_px, height_px)
 
+        # --- Handle group shapes recursively ---
+        if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+            try:
+                for subshape in shape.shapes:
+                    PptSlideRenderer._render_shape(painter, subshape, sw_emu, sh_emu, w_px, h_px, dpi)
+            except Exception:
+                pass
+            return
+
         # --- Render shape fill ---
         try:
             fill = shape.fill
@@ -113,6 +122,10 @@ class PptSlideRenderer:
         if shape.has_text_frame:
             tf = shape.text_frame
             PptSlideRenderer._render_text_frame(painter, tf, rect, dpi)
+
+        # --- Render table ---
+        if shape.shape_type == MSO_SHAPE_TYPE.TABLE:
+            PptSlideRenderer._render_table(painter, shape.table, rect, dpi)
 
         # --- Render shape outline ---
         try:
@@ -228,6 +241,131 @@ class PptSlideRenderer:
 
             if current_y > rect.bottom():
                 break
+
+    @staticmethod
+    def _render_table(painter, table, rect, dpi):
+        """Render a PowerPoint table shape."""
+        rows = table.rows
+        cols = table.columns
+        if not rows or not cols:
+            return
+
+        # Table styling
+        painter.save()
+
+        # Background fill
+        try:
+            fill = table.fill
+            if fill is not None:
+                fill_type = fill.type
+                if fill_type == 1:  # Solid
+                    rgb = fill.fore_color.rgb
+                    painter.setBrush(QColor(rgb[0], rgb[1], rgb[2]))
+                    painter.setPen(Qt.NoPen)
+                    painter.drawRect(rect)
+        except Exception:
+            painter.setBrush(QColor("#ffffff"))
+            painter.setPen(Qt.NoPen)
+            painter.drawRect(rect)
+
+        # Calculate cell dimensions
+        n_rows = len(rows)
+        n_cols = len(cols)
+        cell_widths = []
+        cell_heights = []
+
+        # Get cell widths from the table's column widths
+        for col_idx, col in enumerate(cols):
+            try:
+                cell_widths.append(_emu_to_px(col.width, dpi))
+            except Exception:
+                cell_widths.append(int(rect.width() / n_cols))
+
+        for row in rows:
+            try:
+                cell_heights.append(_emu_to_px(row.height, dpi))
+            except Exception:
+                cell_heights.append(int(rect.height() / n_rows))
+
+        # Total dimensions
+        total_w = sum(cell_widths)
+        total_h = sum(cell_heights)
+
+        # Scale factor to fit within rect
+        scale_x = rect.width() / max(total_w, 1)
+        scale_y = rect.height() / max(total_h, 1)
+        scale = min(scale_x, scale_y, 1.0)
+        if scale < 0.3:
+            scale = 0.3
+
+        # Recalculate cell positions starting from rect.top-left
+        x_offset = rect.left()
+        y_offset = rect.top()
+
+        # Draw cells
+        cell_pen = QPen(QColor("#475573"), 1)
+        cell_brush = QBrush(QColor("#f1f1f6"))
+
+        for r, row in enumerate(rows):
+            cell_h = max(cell_heights[r] * scale, 10) if cell_heights else max(int(rect.height() / n_rows), 10)
+            for c, cell in enumerate(row.cells):
+                cell_w = max(cell_widths[c] * scale, 10) if cell_widths else max(int(rect.width() / n_cols), 10)
+
+                # Cell rectangle
+                cell_rect = QRectF(
+                    x_offset + c * (cell_widths[c] * scale if cell_widths else max(int(rect.width() / n_cols), 10)),
+                    y_offset + r * (cell_heights[r] * scale if cell_heights else max(int(rect.height() / n_rows), 10)),
+                    cell_w,
+                    cell_h
+                )
+
+                # Cell background
+                try:
+                    fill = cell.fill
+                    if fill is not None:
+                        fill_type = fill.type
+                        if fill_type == 1:
+                            rgb = fill.fore_color.rgb
+                            painter.setBrush(QColor(rgb[0], rgb[1], rgb[2]))
+                        else:
+                            painter.setBrush(cell_brush)
+                    else:
+                        painter.setBrush(cell_brush)
+                except Exception:
+                    painter.setBrush(cell_brush)
+
+                painter.setPen(cell_pen)
+                painter.drawRect(cell_rect)
+
+                # Cell text
+                text = cell.text
+                if text and text.strip():
+                    text_color = QColor("#1e293b")
+                    font_size = 14
+                    font_bold = False
+                    try:
+                        font = cell.text_frame.paragraphs[0].font if cell.text_frame.paragraphs else None
+                        if font:
+                            if font.color and font.color.rgb:
+                                rgb = font.color.rgb
+                                text_color = QColor(rgb[0], rgb[1], rgb[2])
+                            font_size = int(font.size / EMU_PER_PT) if font.size else 14
+                            font_bold = font.bold if font.bold else False
+                    except Exception:
+                        pass
+
+                    qfont = QFont("Calibri", int(font_size * scale * 0.8))
+                    qfont.setBold(font_bold)
+                    painter.setFont(qfont)
+                    painter.setPen(QPen(text_color))
+
+                    fm = QFontMetrics(qfont)
+                    text_rect = cell_rect.adjusted(2, 2, -2, -2)
+
+                    # Render wrapped text
+                    painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, text)
+
+        painter.restore()
 
 
 class PptHandler:
