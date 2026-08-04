@@ -15,7 +15,7 @@ class PageNode:
         # Store metadata for other engines (like HTML views or compilers state)
         self.meta = {
             "canvas_type": "plain",  # "plain" | "html" | "compiler" | "browser" | "presentation" | "pdf"
-            "html_code": "<!-- Paste HTML here -->\n<div style='background: linear-gradient(135deg, #8a2be2, #4a00e0); color: white; padding: 40px; border-radius: 12px; font-family: sans-serif; text-align: center;'>\n  <h2>UniBoard HTML Presentation</h2>\n  <p>Render presentation pages and annotate on top of them.</p>\n</div>",
+            "html_code": "<!-- Paste HTML here -->\n<!DOCTYPE html>\n<html>\n<head>\n<style>\n  body { margin: 0; padding: 0; background: #0d0d11; color: #e2e8f0; font-family: 'Segoe UI', Arial, sans-serif; }\n  .container { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; background: linear-gradient(135deg, rgba(18,18,30,1) 0%, rgba(30,30,50,1) 100%); }\n  h1 { color: #a855f7; font-size: 2.5em; margin-bottom: 10px; }\n  p { color: #94a3b8; font-size: 1.1em; line-height: 1.6; max-width: 600px; }\n  .badge { background: rgba(138,43,226,0.2); border: 1px solid rgba(138,43,226,0.4); border-radius: 12px; padding: 20px 40px; display: inline-block; margin-top: 10px; }\n</style>\n</head>\n<body>\n  <div class=\"container\">\n    <div class=\"badge\">\n      <h1>UniBoard</h1>\n      <p>Edit this HTML and render it with annotations on top.<br/>Switch to the Canvas type below to start drawing.</p>\n    </div>\n  </div>\n</body>\n</html>\n",
             "compiled_code": "# Write python code here\nprint('Hello UniBoard compiler!')\n",
             "compiler_lang": "Python",
             "live_url": "https://www.google.com",

@@ -894,6 +894,7 @@ class BrowserWidget(QWidget):
         nav_layout.addWidget(self._clear_annot_btn)
 
         root.addWidget(nav)
+        root.addWidget(self._content_frame, 1)
 
         # Transparent annotation overlay on top of the web view.
         self._annot_overlay = PptCanvasView(self._content_frame)
