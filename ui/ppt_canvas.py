@@ -6,15 +6,15 @@ from PySide6.QtWidgets import (
     QGraphicsScene, QGraphicsPathItem, QGraphicsRectItem, QGraphicsEllipseItem,
     QGraphicsLineItem, QGraphicsTextItem, QInputDialog, QFileDialog,
     QMessageBox, QFrame, QGraphicsItem, QGraphicsProxyWidget, QSizePolicy,
-    QApplication, QCheckBox
+    QApplication, QCheckBox, QProgressDialog, QSpinBox
 )
 from PySide6.QtGui import (
-    QPainter, QPen, QBrush, QColor, QPainterPath, QFont, QCursor, QPixmap, QFontInfo
+    QPainter, QPen, QBrush, QColor, QPainterPath, QFont, QCursor, QPixmap, QFontInfo, QImage
 )
 from PySide6.QtCore import Qt, QPointF, QRectF, QPoint, Signal, QTimer
 
 import config
-from core.ppt_handler import PptHandler
+from core.ppt_handler import PptHandler, PptRenderThread
 from ui.canvas import (
     MovablePathItem, ResizableRectItem, ResizableEllipseItem,
     ResizableLineItem, MovableTextItem
@@ -481,6 +481,8 @@ class PptCanvasWidget(QWidget):
         self.current_slide_index = 0
         self.slide_annotations = {}
         self._current_file_path = None
+        self._render_thread = None
+        self._progress_dialog = None
 
         self._build_ui()
 
@@ -608,7 +610,6 @@ class PptCanvasWidget(QWidget):
         self.slide_input_label.setStyleSheet("color: #94a3b8; font-size: 13px;")
         nav_layout.addWidget(self.slide_input_label)
 
-        from PySide6.QtWidgets import QSpinBox
         self.slide_spin = QSpinBox()
         self.slide_spin.setRange(1, 1)
         self.slide_spin.setValue(1)
@@ -649,6 +650,19 @@ class PptCanvasWidget(QWidget):
             QMessageBox.critical(self, "Error", f"Failed to load presentation:\n{str(e)}")
             return
 
+        # Check for LibreOffice before starting async render
+        if not self.ppt_handler.has_render_engine():
+            QMessageBox.critical(
+                self,
+                "LibreOffice Not Found",
+                "LibreOffice is required to render PowerPoint slides.\n\n"
+                "Please install LibreOffice:\n"
+                "  Windows: https://www.libreoffice.org/download/download/\n"
+                "  macOS:   brew install --cask libreoffice\n"
+                "  Linux:   sudo apt install libreoffice-impress",
+            )
+            return
+
         self._current_file_path = file_path
         self.current_slide_index = 0
         self.slide_annotations.clear()
@@ -659,10 +673,81 @@ class PptCanvasWidget(QWidget):
         self.slide_spin.setRange(1, count)
         self.slide_spin.setValue(1)
         self._update_nav_buttons()
+
+        # --- Start async rendering ---
+        # Disable the widget so the user can't navigate while rendering
+        self.setEnabled(False)
+
+        # Progress dialog (indeterminate initially during PPTX→PDF conversion)
+        self._progress_dialog = QProgressDialog("Preparing presentation…", self)
+        self._progress_dialog.setWindowModality(Qt.WindowModal)
+        self._progress_dialog.setMinimumDuration(0)
+        self._progress_dialog.setMinimumSize(400, 100)
+        self._progress_dialog.setMinimum(0)
+        self._progress_dialog.setMaximum(0)  # indeterminate
+        self._progress_dialog.setCancelButtonText("Cancel")
+        self._progress_dialog.canceled.connect(self._on_render_cancelled)
+
+        # Start the render thread
+        self._render_thread = PptRenderThread(
+            file_path, count, dpi=config.RENDER_DPI, parent=self
+        )
+        self._render_thread.slide_rendered.connect(self._on_slide_rendered)
+        self._render_thread.progress_changed.connect(self._on_progress_changed)
+        self._render_thread.rendering_finished.connect(self._on_rendering_finished)
+        self._render_thread.rendering_error.connect(self._on_rendering_error)
+        self._render_thread.start()
+
+    # ------------------------------------------------------------------ #
+    #  Render-thread signal handlers
+    # ------------------------------------------------------------------ #
+    def _on_slide_rendered(self, index: int, image: QImage):
+        """Store a rendered slide image. Called from the main thread via Qt signal."""
+        pm = QPixmap.fromImage(image)
+        self.ppt_handler._slide_renders[index] = pm
+
+    def _on_progress_changed(self, message: str):
+        if self._progress_dialog:
+            self._progress_dialog.setLabelText(message)
+            # Switch to determinate mode if we know the total slide count
+            if "Rendering slide" in message and self._progress_dialog.maximum() == 0:
+                self._progress_dialog.setMaximum(self.ppt_handler.slide_count)
+
+    def _on_rendering_finished(self, count_rendered: int):
+        self._cleanup_render_state()
+        if self._current_file_path:
+            self.file_label.setText(os.path.basename(self._current_file_path))
+        self.download_btn.setEnabled(True)
+        self._update_nav_buttons()
         self._show_slide(0)
         self.setEnabled(True)
-        self.download_btn.setEnabled(True)
-        self.ppt_loaded.emit(file_path)
+        self.ppt_loaded.emit(self._current_file_path)
+
+    def _on_rendering_error(self, error_message: str):
+        self._cleanup_render_state()
+        QMessageBox.critical(self, "Rendering Error", error_message)
+        # Still allow navigation to show placeholders
+        self.download_btn.setEnabled(False)
+        self._update_nav_buttons()
+        self._show_slide(0)
+        self.setEnabled(True)
+
+    def _on_render_cancelled(self):
+        if self._render_thread and self._render_thread.isRunning():
+            self._render_thread.cancel()
+
+    def _cleanup_render_state(self):
+        """Stop the render thread and dismiss the progress dialog."""
+        if self._render_thread:
+            if self._render_thread.isRunning():
+                self._render_thread.cancel()
+                self._render_thread.wait(5000)
+            self._render_thread.deleteLater()
+            self._render_thread = None
+        if self._progress_dialog:
+            self._progress_dialog.close()
+            self._progress_dialog.deleteLater()
+            self._progress_dialog = None
 
     def _save_current_annotations(self):
         if self._current_file_path is None:
@@ -696,7 +781,10 @@ class PptCanvasWidget(QWidget):
         else:
             # Persistent OFF: annotations are temporary, cleared on navigation
             self.slide_view.set_slide_background(pixmap)
-        self.slide_counter.setText(f"Slide {index + 1} / {self.ppt_handler.slide_count}")
+        if pixmap:
+            self.slide_counter.setText(f"Slide {index + 1} / {self.ppt_handler.slide_count}")
+        else:
+            self.slide_counter.setText(f"Slide {index + 1} / {self.ppt_handler.slide_count} (rendering…)")
         self.slide_spin.blockSignals(True)
         self.slide_spin.setValue(index + 1)
         self.slide_spin.blockSignals(False)

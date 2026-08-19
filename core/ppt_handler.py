@@ -1,375 +1,188 @@
 import io
-import copy
 import os
+import glob
+import shutil
+import tempfile
+import subprocess
+import logging
+
+import fitz
 from pptx import Presentation
-from pptx.util import Emu, Pt
-from pptx.dml.color import RGBColor as PptRGBColor
-from pptx.enum.text import PP_ALIGN
-from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 from PySide6.QtGui import (
-    QPixmap, QImage, QPainter, QColor, QPen, QFont, QFontInfo,
-    QBrush, QTransform, QFontMetrics
+    QPixmap, QImage, QPainter, QColor
 )
-from PySide6.QtCore import Qt, QRectF, QPointF, QBuffer, QIODevice
+from PySide6.QtCore import Qt, QRectF, QBuffer, QIODevice, QThread, Signal
 from PySide6.QtWidgets import QGraphicsScene
 
+logger = logging.getLogger(__name__)
 
 EMU_PER_INCH = 914400
 DEFAULT_DPI = 96
 EMU_PER_PT = 12700
+
+_LO_INSTALL_HINT = (
+    "LibreOffice is not installed or not found in PATH.\n\n"
+    "Please install LibreOffice to enable PPTX rendering:\n"
+    "  Windows: https://www.libreoffice.org/download/download/\n"
+    "  macOS:   brew install --cask libreoffice\n"
+    "  Linux:   sudo apt install libreoffice-impress"
+)
 
 
 def _emu_to_px(emu, dpi=DEFAULT_DPI):
     return int(emu / EMU_PER_INCH * dpi)
 
 
-class PptSlideRenderer:
-    """Renders a pptx slide to a QPixmap using python-pptx extracted data."""
+def detect_libreoffice():
+    """Return the path to the LibreOffice (or soffice) executable, or None."""
+    return shutil.which("libreoffice") or shutil.which("soffice")
 
-    @staticmethod
-    def render(slide, slide_width_emu, slide_height_emu, dpi=DEFAULT_DPI):
-        width_px = _emu_to_px(slide_width_emu, dpi)
-        height_px = _emu_to_px(slide_height_emu, dpi)
 
-        pixmap = QPixmap(width_px, height_px)
-        pixmap.fill(QColor("#ffffff"))
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setRenderHint(QPainter.TextAntialiasing)
+class PptRenderThread(QThread):
+    """Background thread that converts a PPTX to PDF via LibreOffice headless,
+    then renders each page to a QImage via PyMuPDF.
 
+    QImage is reentrant and can be constructed / copied inside a QThread.
+    The emitted QImage is a deep copy that owns its own buffer, so it is
+    safe to use after the thread exits.  The main thread converts it to a
+    QPixmap (which must live on the GUI thread).
+    """
+
+    slide_rendered = Signal(int, QImage)       # slide_index, image
+    progress_changed = Signal(str)             # human-readable status
+    rendering_finished = Signal(int)           # count of slides rendered
+    rendering_error = Signal(str)              # error message
+
+    def __init__(self, file_path, slide_count, dpi=200):
+        super().__init__()
+        self.file_path = file_path
+        self.slide_count = slide_count
+        self.dpi = dpi
+        self._cancelled = False
+        self._temp_dir = None
+
+    # ------------------------------------------------------------------ #
+    # Public
+    # ------------------------------------------------------------------ #
+    def cancel(self):
+        self._cancelled = True
+
+    # ------------------------------------------------------------------ #
+    # QThread.run
+    # ------------------------------------------------------------------ #
+    def run(self):
         try:
-            bg = slide.background
-            if bg.fill is not None:
-                fill = bg.fill
-                try:
-                    if hasattr(fill, 'fore_color') and fill.fore_color is not None:
-                        try:
-                            rgb = fill.fore_color.rgb
-                            painter.fillRect(
-                                QRectF(0, 0, width_px, height_px),
-                                QColor(rgb[0], rgb[1], rgb[2])
-                            )
-                        except (AttributeError, ValueError):
-                            pass
-                except Exception:
-                    pass
-        except Exception:
-            pass
+            self._do_render()
+        except Exception as exc:
+            self.rendering_error.emit(
+                f"Unexpected error during rendering:\n{exc}"
+            )
+            logger.exception("PptRenderThread failed")
+        finally:
+            self._cleanup()
 
-        for shape in slide.shapes:
-            PptSlideRenderer._render_shape(painter, shape, slide_width_emu, slide_height_emu, width_px, height_px, dpi)
-
-        painter.end()
-        return pixmap
-
-    @staticmethod
-    def _render_shape(painter, shape, sw_emu, sh_emu, w_px, h_px, dpi):
-        left_px = _emu_to_px(shape.left, dpi) if shape.left is not None else 0
-        top_px = _emu_to_px(shape.top, dpi) if shape.top is not None else 0
-        width_px = _emu_to_px(shape.width, dpi) if shape.width is not None else 0
-        height_px = _emu_to_px(shape.height, dpi) if shape.height is not None else 0
-
-        if width_px <= 0 or height_px <= 0:
+    # ------------------------------------------------------------------ #
+    # Implementation
+    # ------------------------------------------------------------------ #
+    def _do_render(self):
+        lo_path = detect_libreoffice()
+        if not lo_path:
+            self.rendering_error.emit(_LO_INSTALL_HINT)
             return
 
-        rect = QRectF(left_px, top_px, width_px, height_px)
+        # --- Step 1: PPTX → PDF (LibreOffice headless) ---
+        self._temp_dir = tempfile.mkdtemp(prefix="uniboard_ppt_")
+        self.progress_changed.emit("Converting presentation to PDF…")
 
-        # --- Handle group shapes recursively ---
-        if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
-            try:
-                for subshape in shape.shapes:
-                    PptSlideRenderer._render_shape(painter, subshape, sw_emu, sh_emu, w_px, h_px, dpi)
-            except Exception:
-                pass
+        cmd = [
+            lo_path,
+            "--headless",
+            "--norestore",
+            "--nolockcheck",
+            "--convert-to", "pdf",
+            "--outdir", self._temp_dir,
+            "--",
+            self.file_path,
+        ]
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                timeout=300,
+                text=True,
+            )
+        except subprocess.TimeoutExpired:
+            self.rendering_error.emit(
+                "LibreOffice timed out while converting the presentation.\n"
+                "Try opening a smaller file or increase the timeout."
+            )
             return
 
-        # --- Render shape fill ---
-        try:
-            fill = shape.fill
-            if fill is not None:
-                try:
-                    fill_type = fill.type
-                except Exception:
-                    fill_type = None
-                if fill_type is not None:
-                    try:
-                        if hasattr(fill, 'fore_color') and fill.fore_color is not None:
-                            rgb = fill.fore_color.rgb
-                            painter.save()
-                            painter.setBrush(QColor(rgb[0], rgb[1], rgb[2]))
-                            painter.setPen(Qt.NoPen)
-                            painter.drawRect(rect)
-                            painter.restore()
-                    except (AttributeError, ValueError):
-                        pass
-        except Exception:
-            pass
+        if result.returncode != 0:
+            self.rendering_error.emit(
+                f"LibreOffice failed to convert the file:\n"
+                f"stderr: {result.stderr.strip()}\n"
+                f"stdout: {result.stdout.strip()}"
+            )
+            return
 
-        # --- Render image (Picture shape) ---
-        try:
-            if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
-                image_data = shape.image.blob
-                qimg = QImage.fromData(image_data)
-                if not qimg.isNull():
-                    painter.save()
-                    painter.drawImage(rect, qimg)
-                    painter.restore()
-        except Exception:
-            pass
+        # Locate the generated PDF
+        pdf_files = glob.glob(os.path.join(self._temp_dir, "*.pdf"))
+        if not pdf_files:
+            self.rendering_error.emit(
+                "LibreOffice did not produce a PDF output.\n"
+                f"Output directory: {self._temp_dir}"
+            )
+            return
 
-        # --- Render text ---
-        if shape.has_text_frame:
-            tf = shape.text_frame
-            PptSlideRenderer._render_text_frame(painter, tf, rect, dpi)
+        pdf_path = pdf_files[0]
 
-        # --- Render table ---
-        if shape.shape_type == MSO_SHAPE_TYPE.TABLE:
-            PptSlideRenderer._render_table(painter, shape.table, rect, dpi)
+        # --- Step 2: PDF pages → QImage (PyMuPDF) ---
+        doc = fitz.open(pdf_path)
+        page_count = min(len(doc), self.slide_count)
+        zoom = self.dpi / 72.0
+        mat = fitz.Matrix(zoom, zoom)
 
-        # --- Render shape outline ---
-        try:
-            line = shape.line
-            if line is not None and hasattr(line, 'fill') and line.fill is not None:
-                try:
-                    lf = line.fill
-                    if hasattr(lf, 'fore_color') and lf.fore_color is not None:
-                        rgb = lf.fore_color.rgb
-                        try:
-                            line_width = line.width / EMU_PER_PT if line.width else 1.5
-                        except Exception:
-                            line_width = 1.5
-                        painter.save()
-                        painter.setBrush(Qt.NoBrush)
-                        painter.setPen(QPen(QColor(rgb[0], rgb[1], rgb[2]), max(1, int(line_width))))
-                        painter.drawRect(rect)
-                        painter.restore()
-                except (AttributeError, ValueError):
-                    pass
-        except Exception:
-            pass
+        for i in range(page_count):
+            if self._cancelled:
+                break
+            page = doc[i]
+            pix = page.get_pixmap(matrix=mat)
 
-    @staticmethod
-    def _render_text_frame(painter, tf, rect, dpi):
-        current_y = rect.top() + 4
-        right_margin = rect.right() - 4
-        left_margin = rect.left() + 4
-        max_width = right_margin - left_margin
-
-        for para in tf.paragraphs:
-            para_text = para.text
-            if not para_text.strip():
-                current_y += 8
+            if pix.samples is None:
+                self.progress_changed.emit(
+                    f"Rendering slide {i + 1}/{page_count}… (skipped)"
+                )
                 continue
 
-            font_size = None
-            font_bold = False
-            font_italic = False
-            font_color = QColor("#000000")
-            font_name = "Calibri"
+            # QImage wraps pix.samples without copying.  We must deep-copy
+            # immediately so the QImage owns its buffer before pix is freed.
+            img = QImage(
+                pix.samples,
+                pix.width,
+                pix.height,
+                pix.stride,
+                QImage.Format_RGB888,
+            )
+            img = img.copy()  # deep copy — now safe to emit across threads
+            self.slide_rendered.emit(i, img)
+            self.progress_changed.emit(f"Rendering slide {i + 1}/{page_count}…")
 
-            space_before = 0
-            space_after = 0
+        doc.close()
+        self.rendering_finished.emit(
+            min(page_count, self.slide_count) if not self._cancelled else 0
+        )
 
-            if para.runs:
-                run = para.runs[0]
-                font = run.font
-                if font.size:
-                    font_size = font.size / EMU_PER_PT
-                if font.bold:
-                    font_bold = font.bold
-                if font.italic:
-                    font_italic = font.italic
-                try:
-                    if font.color and font.color.rgb:
-                        rgb = font.color.rgb
-                        font_color = QColor(rgb[0], rgb[1], rgb[2])
-                except AttributeError:
-                    pass
-                if font.name:
-                    font_name = font.name
-
-            try:
-                space_before = para.space_before.emu / EMU_PER_PT if para.space_before else 0
-            except Exception:
-                pass
-            try:
-                space_after = para.space_after.emu / EMU_PER_PT if para.space_after else 0
-            except Exception:
-                pass
-
-            if font_size is None:
-                font_size = 18
-
-            current_y += space_before * 1.2
-
-            qfont = QFont(font_name, int(font_size))
-            qfont.setBold(font_bold)
-            qfont.setItalic(font_italic)
-
-            align = PP_ALIGN.LEFT
-            try:
-                align = para.alignment or PP_ALIGN.LEFT
-            except Exception:
-                pass
-
-            qt_align = Qt.AlignLeft
-            if align == PP_ALIGN.CENTER:
-                qt_align = Qt.AlignHCenter
-            elif align == PP_ALIGN.RIGHT:
-                qt_align = Qt.AlignRight
-
-            painter.save()
-            painter.setFont(qfont)
-            painter.setPen(QPen(font_color))
-
-            fm = QFontMetrics(qfont)
-            line_height = fm.height() + 4
-
-            para_rect = QRectF(left_margin, current_y, max_width, line_height)
-            painter.drawText(para_rect, int(qt_align | Qt.AlignTop | Qt.TextWordWrap), para_text)
-
-            from PySide6.QtCore import QRect
-            actual_height = fm.boundingRect(
-                QRect(0, 0, int(max_width), 10000),
-                int(qt_align | Qt.AlignTop | Qt.TextWordWrap),
-                para_text
-            ).height() + 4
-
-            current_y += max(actual_height, line_height) + space_after * 0.8
-            painter.restore()
-
-            if current_y > rect.bottom():
-                break
-
-    @staticmethod
-    def _render_table(painter, table, rect, dpi):
-        """Render a PowerPoint table shape."""
-        rows = table.rows
-        cols = table.columns
-        if not rows or not cols:
-            return
-
-        # Table styling
-        painter.save()
-
-        # Background fill
-        try:
-            fill = table.fill
-            if fill is not None:
-                fill_type = fill.type
-                if fill_type == 1:  # Solid
-                    rgb = fill.fore_color.rgb
-                    painter.setBrush(QColor(rgb[0], rgb[1], rgb[2]))
-                    painter.setPen(Qt.NoPen)
-                    painter.drawRect(rect)
-        except Exception:
-            painter.setBrush(QColor("#ffffff"))
-            painter.setPen(Qt.NoPen)
-            painter.drawRect(rect)
-
-        # Calculate cell dimensions
-        n_rows = len(rows)
-        n_cols = len(cols)
-        cell_widths = []
-        cell_heights = []
-
-        # Get cell widths from the table's column widths
-        for col_idx, col in enumerate(cols):
-            try:
-                cell_widths.append(_emu_to_px(col.width, dpi))
-            except Exception:
-                cell_widths.append(int(rect.width() / n_cols))
-
-        for row in rows:
-            try:
-                cell_heights.append(_emu_to_px(row.height, dpi))
-            except Exception:
-                cell_heights.append(int(rect.height() / n_rows))
-
-        # Total dimensions
-        total_w = sum(cell_widths)
-        total_h = sum(cell_heights)
-
-        # Scale factor to fit within rect
-        scale_x = rect.width() / max(total_w, 1)
-        scale_y = rect.height() / max(total_h, 1)
-        scale = min(scale_x, scale_y, 1.0)
-        if scale < 0.3:
-            scale = 0.3
-
-        # Recalculate cell positions starting from rect.top-left
-        x_offset = rect.left()
-        y_offset = rect.top()
-
-        # Draw cells
-        cell_pen = QPen(QColor("#475573"), 1)
-        cell_brush = QBrush(QColor("#f1f1f6"))
-
-        for r, row in enumerate(rows):
-            cell_h = max(cell_heights[r] * scale, 10) if cell_heights else max(int(rect.height() / n_rows), 10)
-            for c, cell in enumerate(row.cells):
-                cell_w = max(cell_widths[c] * scale, 10) if cell_widths else max(int(rect.width() / n_cols), 10)
-
-                # Cell rectangle
-                cell_rect = QRectF(
-                    x_offset + c * (cell_widths[c] * scale if cell_widths else max(int(rect.width() / n_cols), 10)),
-                    y_offset + r * (cell_heights[r] * scale if cell_heights else max(int(rect.height() / n_rows), 10)),
-                    cell_w,
-                    cell_h
-                )
-
-                # Cell background
-                try:
-                    fill = cell.fill
-                    if fill is not None:
-                        fill_type = fill.type
-                        if fill_type == 1:
-                            rgb = fill.fore_color.rgb
-                            painter.setBrush(QColor(rgb[0], rgb[1], rgb[2]))
-                        else:
-                            painter.setBrush(cell_brush)
-                    else:
-                        painter.setBrush(cell_brush)
-                except Exception:
-                    painter.setBrush(cell_brush)
-
-                painter.setPen(cell_pen)
-                painter.drawRect(cell_rect)
-
-                # Cell text
-                text = cell.text
-                if text and text.strip():
-                    text_color = QColor("#1e293b")
-                    font_size = 14
-                    font_bold = False
-                    try:
-                        font = cell.text_frame.paragraphs[0].font if cell.text_frame.paragraphs else None
-                        if font:
-                            if font.color and font.color.rgb:
-                                rgb = font.color.rgb
-                                text_color = QColor(rgb[0], rgb[1], rgb[2])
-                            font_size = int(font.size / EMU_PER_PT) if font.size else 14
-                            font_bold = font.bold if font.bold else False
-                    except Exception:
-                        pass
-
-                    qfont = QFont("Calibri", int(font_size * scale * 0.8))
-                    qfont.setBold(font_bold)
-                    painter.setFont(qfont)
-                    painter.setPen(QPen(text_color))
-
-                    fm = QFontMetrics(qfont)
-                    text_rect = cell_rect.adjusted(2, 2, -2, -2)
-
-                    # Render wrapped text
-                    painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, text)
-
-        painter.restore()
+    def _cleanup(self):
+        if self._temp_dir and os.path.isdir(self._temp_dir):
+            shutil.rmtree(self._temp_dir, ignore_errors=True)
+            self._temp_dir = None
 
 
 class PptHandler:
-    """Handles PPTX loading, slide rendering, annotation storage, and export."""
+    """Handles PPTX loading, slide rendering (via LibreOffice + PyMuPDF),
+    annotation storage, and annotated-PPTX export."""
 
     def __init__(self):
         self.prs = None
@@ -378,11 +191,19 @@ class PptHandler:
         self.slide_width_emu = 0
         self.slide_height_emu = 0
         self.slide_count = 0
-        self._slide_renders = {}
+        self._slide_renders: dict[int, QPixmap] = {}
         self._annotations = {}
         self._annotation_scenes = {}
 
-    def load(self, file_path):
+    # ------------------------------------------------------------------ #
+    # Lifecycle
+    # ------------------------------------------------------------------ #
+    def load(self, file_path: str):
+        """Open a PPTX file and read slide metadata (count, dimensions).
+
+        This does *not* render any slide images — use ``render_all_slides``
+        or ``PptRenderThread`` for that.
+        """
         self.file_path = file_path
         self.prs = Presentation(file_path)
         self.slides = list(self.prs.slides)
@@ -394,28 +215,39 @@ class PptHandler:
         self._annotation_scenes.clear()
         return self.slide_count
 
-    def get_slide_pixmap(self, index):
-        if index in self._slide_renders:
-            return self._slide_renders[index]
-        if 0 <= index < self.slide_count:
-            pm = PptSlideRenderer.render(
-                self.slides[index], self.slide_width_emu, self.slide_height_emu
-            )
-            self._slide_renders[index] = pm
-            return pm
-        return None
+    def has_render_engine(self) -> bool:
+        """True when LibreOffice is available for rendering."""
+        return detect_libreoffice() is not None
 
-    def get_slide_size(self):
-        w = _emu_to_px(self.slide_width_emu)
-        h = _emu_to_px(self.slide_height_emu)
+    # ------------------------------------------------------------------ #
+    # Slide retrieval
+    # ------------------------------------------------------------------ #
+    def get_slide_pixmap(self, index: int) -> QPixmap | None:
+        """Return the pre-rendered pixmap for *index*, or None."""
+        return self._slide_renders.get(index)
+
+    def get_slide_size(self, dpi=DEFAULT_DPI):
+        if self.prs is None:
+            return 0, 0
+        w = _emu_to_px(self.slide_width_emu, dpi)
+        h = _emu_to_px(self.slide_height_emu, dpi)
         return w, h
 
-    def get_annotation_scene(self, index):
+    def get_slide_thumbnail(self, index: int, max_width: int = 200) -> QPixmap | None:
+        pm = self.get_slide_pixmap(index)
+        if pm is None:
+            return None
+        return pm.scaledToWidth(max_width, Qt.SmoothTransformation)
+
+    # ------------------------------------------------------------------ #
+    # Annotation scene storage (kept for API compatibility with PptCanvasView)
+    # ------------------------------------------------------------------ #
+    def get_annotation_scene(self, index: int) -> QGraphicsScene:
         if index not in self._annotation_scenes:
             self._annotation_scenes[index] = QGraphicsScene()
         return self._annotation_scenes[index]
 
-    def save_current_annotations(self, index, scene):
+    def save_current_annotations(self, index: int, scene: QGraphicsScene):
         if index not in self._annotation_scenes:
             self._annotation_scenes[index] = scene
         else:
@@ -425,13 +257,11 @@ class PptHandler:
             for item in scene.items():
                 old_scene.addItem(item)
 
-    def get_slide_thumbnail(self, index, max_width=200):
-        pm = self.get_slide_pixmap(index)
-        if pm is None:
-            return None
-        return pm.scaledToWidth(max_width, Qt.SmoothTransformation)
-
-    def export_annotated_pptx(self, output_path, annotation_map):
+    # ------------------------------------------------------------------ #
+    # Annotated PPTX export (python-pptx — unchanged, works correctly)
+    # ------------------------------------------------------------------ #
+    def export_annotated_pptx(self, output_path: str, annotation_map: dict) -> bool:
+        """Export the original PPTX with annotation overlays baked in as images."""
         if self.prs is None:
             return False
 
@@ -458,14 +288,22 @@ class PptHandler:
             img_bytes = img_buffer.data().data()
             img_buffer.close()
 
-            import io
             python_buffer = io.BytesIO(img_bytes)
 
             slide.shapes.add_picture(
                 python_buffer,
                 0, 0,
-                self.slide_width_emu, self.slide_height_emu,
+                self.slide_width_emu,
+                self.slide_height_emu,
             )
 
         prs_copy.save(output_path)
         return True
+
+    # ------------------------------------------------------------------ #
+    # Cleanup
+    # ------------------------------------------------------------------ #
+    def close(self):
+        self.prs = None
+        self._slide_renders.clear()
+        self._annotation_scenes.clear()

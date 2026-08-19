@@ -34,6 +34,7 @@ class PdfHandler:
         mat = fitz.Matrix(zoom, zoom)
         pix = page.get_pixmap(matrix=mat)
         img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888)
+        img = img.copy()  # deep copy — QImage now owns its buffer (PyMuPDF frees `pix` on GC)
         pm = QPixmap.fromImage(img)
         self._page_renders[index] = pm
         return pm
@@ -80,6 +81,7 @@ class PdfHandler:
 
             pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
             img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888)
+            img = img.copy()  # deep copy — detach from PyMuPDF buffer
             pm = QPixmap.fromImage(img)
 
             scene = annotation_map.get(i)

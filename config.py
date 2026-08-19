@@ -30,6 +30,9 @@ GRID_SIZE = 40
 MIN_ZOOM = 0.1
 MAX_ZOOM = 10.0
 
+# PPTX / PDF Render DPI (used by LibreOffice+PyMuPDF and PyMuPDF renderers)
+RENDER_DPI = 200
+
 # Canvas Types
 CANVAS_PLAIN = "plain"
 CANVAS_HTML = "html"
