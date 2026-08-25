@@ -1,9 +1,11 @@
 PySide6>=6.4.0
 numpy
 requests
-Pillow
-google-genai
+opencv-python-headless
 reportlab
 python-pptx>=1.0.2
 PyMuPDF>=1.23.0
-opencv-python
+
+# System dependency (not pip-installable):
+#   LibreOffice is required for PPTX slide rendering.
+#   https://www.libreoffice.org/download/download/

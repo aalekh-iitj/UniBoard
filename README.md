@@ -64,14 +64,39 @@ whiteBoard-Uniboard/
 2. **Install Dependencies**
    Ensure Python 3.14 or 3.x is installed. Install required packages:
    ```bash
-   pip install PySide6 google-genai numpy requests opencv-python Pillow
+   pip install -r requirements.txt
    ```
-   *(Note: `google-genai` is the official modern Gemini API client. `opencv-python` and `Pillow` are used for screen capture and image utilities).*
+   *(Note: `google-genai` is the official modern Gemini API client. `opencv-python-headless` is used for screen recording.)*
 
-3. **Run the Application**
+3. **Install LibreOffice (required for PPTX rendering)**
+   Slides are rendered with 100% fidelity via LibreOffice headless:
+   - Windows: https://www.libreoffice.org/download/download/
+   - macOS:   `brew install --cask libreoffice`
+   - Linux:   `sudo apt install libreoffice-impress`
+
+4. **Run the Application**
    ```bash
    python main.py
    ```
+
+---
+
+## Building a Distribution Installer
+
+Produces a size-optimized bundle (unused Qt modules and non-English locale
+data excluded) plus an LZMA2-compressed setup executable:
+
+```powershell
+# Bundle only:
+.\build.ps1
+
+# Bundle + Inno Setup installer (requires Inno Setup 6):
+.\build.ps1 -Installer
+```
+
+Outputs:
+- `dist\UniBoard\` — portable application folder
+- `installer_output\UniBoard_Setup.exe` — single-file installer
 
 ---
 

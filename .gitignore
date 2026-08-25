@@ -1,0 +1,27 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Build artifacts
+build/
+dist/
+*.spec.bak
+installer_output/
+
+# Runtime directories / files created by the app
+sandbox/
+temp_pdf_images/
+logs/
+*.log
+
+# Environment
+.env
+.venv/
+venv/
+
+# OS / editor noise
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
